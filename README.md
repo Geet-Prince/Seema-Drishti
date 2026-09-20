@@ -872,13 +872,13 @@ ibvap/
 
 | Member | Role | Modules |
 |---|---|---|
-| **Prince Raj** | Architecture & AI Core Lead | Human Detection, Human Tracking, Alarm Manager, Face Recognition, Dashboard, System Integration |
+| **Omkar Mishra** | 🏆 **Team Leader** · Behavioral AI | Suspicious Activity Detection (Loitering, Erratic, Crowd) |
+| **Prince Raj** | Architecture & AI Core | Human Detection, Human Tracking, Alarm Manager, Face Recognition, Dashboard, System Integration |
 | **Abhilasha Jha** | Perimeter Security | Virtual Fence Intrusion Detection, ROI Calibration Tool |
-| **Omkar Mishra** | Behavioral AI | Suspicious Activity Detection (Loitering, Erratic, Crowd) |
 | **Prachi / Mayan** | Vehicle Intelligence | Vehicle Detection + Classification, ANPR Plate Reading |
 
 **GitHub:** [Geet-Prince/ibvap](https://github.com/Geet-Prince/ibvap)  
-**Lead Contact:** Prince Raj — prince.raj.ds@gmail.com
+**Team Leader:** Omkar Mishra
 
 ---
 
