@@ -175,9 +175,6 @@ class ThreadedCamera:
                 time.sleep(0.5)
                 continue
 
-            if getattr(self, 'video_ended', False):
-                time.sleep(0.1)
-                continue
 
             if self.cap is None:
                 self.cap = cv2.VideoCapture(self.src_str)
@@ -197,14 +194,14 @@ class ThreadedCamera:
 
             if not ret:
                 if self.cap and self.cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0:
-                    # It's a video file and we reached the end. 
-                    # Pause playback until user switches camera away and back.
-                    self.video_ended = True
+                    # It's a video file and we reached the end — loop back to start.
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self._decode_failures = 0
                 else:
                     self._decode_failures += 1
                     if self._decode_failures > 100:
                         print(f"  [WARN] {self.id}: Too many decode failures, "
-                              f"re-opening sourceâ€¦")
+                              f"re-opening source…")
                         if self.cap:
                             self.cap.release()
                             self.cap = None
@@ -617,6 +614,7 @@ def main():
     cell_w, cell_h = 480, 270
 
     global_frame_count = 0
+    ALARM_COOLDOWN: dict = {}  # tracks last alarm time per (cam_id, track_id)
 
     try:
         while True:
@@ -736,7 +734,7 @@ def main():
                         activity = obj.attributes.get("activity")
                         if is_breach or activity:
                             key = f"{cam.id}_{obj.track_id}"
-                            if key not in ALARM_COOLDOWN or (ts - ALARM_COOLDOWN[key]) > 1.0:
+                            if key not in ALARM_COOLDOWN or (ts - ALARM_COOLDOWN[key]).total_seconds() > 1.0:
                                 ALARM_COOLDOWN[key] = ts
                                 try:
                                     alarm_queue.put_nowait((analyzed, frames[i].copy()))
