@@ -1,10 +1,13 @@
 import easyocr
 import re
 import cv2
+import torch
 
 class PlateReader:
     def __init__(self):
-        self.reader = easyocr.Reader(['en'], gpu=True)
+        # EasyOCR's gpu=True requires CUDA (NVIDIA). On Mac use cpu=False fallback.
+        _use_gpu = torch.cuda.is_available()
+        self.reader = easyocr.Reader(['en'], gpu=_use_gpu)
         self.pattern = re.compile(r'[^A-Z0-9]')
 
     def read_plate(self, frame, bbox=None):

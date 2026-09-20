@@ -46,10 +46,13 @@ def main():
     print(f"Video source open: {source}. Press 'q' to stop.")
     frame_id = 0
 
-    try:
-        import winsound
-    except ImportError:
-        winsound = None
+    import platform
+    winsound = None  # audio alerts only available on Windows
+    if platform.system() == 'Windows':
+        try:
+            import winsound
+        except ImportError:
+            winsound = None
 
     try:
         from face_recognition.core import FaceRecognitionWorker

@@ -234,30 +234,50 @@ class ConsolidatedBatchedAI:
     ``predict()`` for pure detection (no tracking state to contaminate)."""
 
     def __init__(self):
-        print('  [GPU] Loading TensorRT engine (yolov8s.engine)...')
-
-        import os
+        import os, platform
         from pathlib import Path
+
+        # ── Device detection (Mac / Linux / Windows) ──────────────────────
+        # Priority: CUDA (NVIDIA) → MPS (Apple Silicon) → CPU
+        if torch.cuda.is_available():
+            self._device = 0          # CUDA GPU
+            self._use_half = True     # FP16 safe on CUDA
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            self._device = 'mps'      # Apple Silicon GPU (M1/M2/M3)
+            self._use_half = False    # FP16 not supported on MPS
+        else:
+            self._device = 'cpu'      # Intel Mac / fallback
+            self._use_half = False
+
+        print(f'  [AI] Device: {self._device} | FP16: {self._use_half}')
+
+        # ── TensorRT engine only works on CUDA (NVIDIA + Windows/Linux) ───
         _default_engine = Path(__file__).resolve().parent / 'yolov8s.engine'
         _ENGINE = Path(os.environ.get('IBVAP_TRT_ENGINE', str(_default_engine)))
-        _FALLBACK = 'yolov8s.pt'
+        _FALLBACK = 'yolov8n.pt'   # nano — fast enough on CPU/MPS
 
-        if _ENGINE.exists():
+        if _ENGINE.exists() and torch.cuda.is_available():
+            print('  [AI] Loading TensorRT engine (yolov8s.engine)...')
             self.model = YOLO(str(_ENGINE))
             self._using_trt = True
-            print('  [GPU] TensorRT engine loaded — FP16, fused kernels active')
+            print('  [AI] TensorRT engine loaded — FP16 fused kernels active')
         else:
-            print(f'  [WARN] Engine not found at {_ENGINE}, falling back to {_FALLBACK}')
+            if not torch.cuda.is_available():
+                print(f'  [AI] No NVIDIA GPU — TensorRT skipped. Loading {_FALLBACK} on {self._device}')
+            else:
+                print(f'  [AI] Engine not found at {_ENGINE}, falling back to {_FALLBACK}')
             self.model = YOLO(_FALLBACK)
-            self.model.to('cuda')
+            self.model.to(self._device)
             self._using_trt = False
-            try:
-                self.model.model = torch.compile(
-                    self.model.model, mode='reduce-overhead', fullgraph=False
-                )
-                print('  [GPU] torch.compile enabled (TRT not found)')
-            except Exception as _e:
-                print(f'  [WARN] torch.compile unavailable: {_e}')
+            # torch.compile only useful on CUDA; skip on MPS/CPU
+            if torch.cuda.is_available():
+                try:
+                    self.model.model = torch.compile(
+                        self.model.model, mode='reduce-overhead', fullgraph=False
+                    )
+                    print('  [AI] torch.compile enabled')
+                except Exception as _e:
+                    print(f'  [WARN] torch.compile unavailable: {_e}')
 
         self._anpr = None
         if _ANPR_AVAILABLE:
@@ -306,7 +326,7 @@ class ConsolidatedBatchedAI:
         try:
             if getattr(self, '_using_trt', False):
                 # Init the predictor with a single frame
-                self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=0, verbose=False)
+                self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=self._device, verbose=False)
                 backend = getattr(self.model.predictor, 'model', None)
                 if backend and hasattr(backend, 'bindings'):
                     shape = backend.bindings['images'].shape
@@ -315,19 +335,21 @@ class ConsolidatedBatchedAI:
                 else:
                     self.max_batch = 1
                     self.is_dynamic_batch = False
-                print(f'  [GPU] TRT Model max batch size: {self.max_batch} (dynamic: {self.is_dynamic_batch})')
+                print(f'  [AI] TRT Model max batch size: {self.max_batch} (dynamic: {self.is_dynamic_batch})')
                 if self.max_batch > 1:
                     dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * min(n_cams, self.max_batch)
-                    self.model.predict(dummy, device=0, verbose=False)
+                    self.model.predict(dummy, device=self._device, verbose=False)
             else:
                 for bs in sorted({1, min(n_cams, 4)}):
                     dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * bs
-                    self.model.predict(dummy, device=0, verbose=False)
-                self.max_batch = 16
+                    self.model.predict(dummy, device=self._device, verbose=False)
+                self.max_batch = 4   # Conservative for CPU/MPS
                 self.is_dynamic_batch = True
-            print(f'  [GPU] Warmup done')
+            print(f'  [AI] Warmup done on {self._device}')
         except Exception as exc:
             print(f'Warmup error: {exc}')
+            self.max_batch = 1
+            self.is_dynamic_batch = True
 
     # ------------------------------------------------------------------ #
     def process_batch(
@@ -361,8 +383,8 @@ class ConsolidatedBatchedAI:
                         classes=[0, 2, 3, 5, 7],
                         conf=0.25,
                         imgsz=640,
-                        device=0,
-                        
+                        device=self._device,
+                        half=self._use_half,
                         verbose=False,
                     )
                     yolo_results.extend(chunk_results)
@@ -496,12 +518,15 @@ def start_server():
 
 # â”€â”€ Main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def main():
-    import ctypes
-    try:
-        ctypes.windll.winmm.timeBeginPeriod(1)
-        print('  [SYS] Windows 1ms timer precision enabled')
-    except Exception:
-        pass
+    import platform
+    if platform.system() == 'Windows':
+        # Windows-only: enable 1ms high-resolution timer (no-op on Mac/Linux)
+        try:
+            import ctypes
+            ctypes.windll.winmm.timeBeginPeriod(1)
+            print('  [SYS] Windows 1ms timer precision enabled')
+        except Exception:
+            pass
     print("=" * 60)
     print("  SEEMA DRISHTI — Border Intelligence Platform (V8 Multi-Camera)")
     print("  Dashboard: http://localhost:8000/ui")

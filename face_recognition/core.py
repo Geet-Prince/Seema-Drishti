@@ -39,10 +39,21 @@ class FaceRecognitionWorker:
             self.reload_database()
             
     def _init_model(self):
-        # We use a fast, lightweight insightface setup suitable for edge processing.
-        # Try CUDA first to prevent CPU bottlenecking, fallback to CPU.
-        self.app = FaceAnalysis(name='buffalo_s', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-        # Prepare for only face detection & recognition
+        import torch, platform
+        # Pick the best available ONNX Runtime execution provider for this hardware:
+        #   CUDA      → NVIDIA GPU (Windows/Linux)
+        #   CoreMLExecutionProvider → Apple Silicon M1/M2/M3 (fast)
+        #   CPUExecutionProvider    → Intel Mac / universal fallback
+        if torch.cuda.is_available():
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        elif platform.system() == 'Darwin':
+            # CoreML is natively accelerated on Apple Silicon via Metal/ANE
+            providers = ['CoreMLExecutionProvider', 'CPUExecutionProvider']
+        else:
+            providers = ['CPUExecutionProvider']
+
+        self.app = FaceAnalysis(name='buffalo_s', providers=providers)
+        # ctx_id=0 means GPU slot; on CPU-only it is ignored safely
         self.app.prepare(ctx_id=0, det_size=(640, 640))
 
     def reload_database(self):

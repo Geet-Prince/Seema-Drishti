@@ -118,6 +118,10 @@ class HumanDetector:
         iou_thresh: float = self._cfg["model"]["iou_threshold"]
         device: str = self._cfg["model"]["device"]
 
+        # FP16 (half precision) only works on CUDA. On MPS (Apple Silicon) or
+        # CPU it causes a crash, so we detect the device and disable it safely.
+        use_half = device.startswith("cuda")
+
         results = self._model.predict(
             source=frame,
             classes=target_classes,
@@ -125,7 +129,7 @@ class HumanDetector:
             iou=iou_thresh,
             device=device,
             verbose=False,
-            half=True,
+            half=use_half,
         )
 
         detections = []
