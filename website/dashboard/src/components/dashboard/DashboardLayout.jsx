@@ -135,9 +135,10 @@ export default function DashboardLayout() {
         .slice(0, 6)
         .map((a) => {
           const [x1, y1, x2, y2] = a.bbox;
+          const known = a.identity && a.identity !== 'Unknown' ? ` · ${a.identity}` : '';
           return {
             x: x1, y: y1, w: x2 - x1, h: y2 - y1,
-            label: a.dangerLabel || a.title, confidence: a.confidence != null ? a.confidence / 100 : undefined,
+            label: `${a.dangerLabel || a.title}${known}`, confidence: a.confidence != null ? a.confidence / 100 : undefined,
             severity: a.severity,
           };
         }),

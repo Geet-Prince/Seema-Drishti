@@ -20,6 +20,12 @@ export function normalizeAlert(raw) {
   const ubbox =
     (Array.isArray(raw.bbox) && raw.bbox.length === 4 && raw.bbox.map(Number)) ||
     parseAttrs(raw.attributes, 'bbox');
+  // Identity rides inside attributes (set by the pipeline's face worker).
+  // normalizeAlert used to drop `attributes`, so every row rendered Unknown.
+  const attrs = parseAttrs(raw.attributes, null) || (typeof raw.attributes === 'object' ? raw.attributes : null) || {};
+  const identity = attrs.identity || raw.identity || 'Unknown';
+  const badgeNumber = attrs.badge_number || raw.badge_number || '';
+  const faceImage = attrs.image_path || raw.image_path || '';
 
   return {
     _id: incidentId,
@@ -39,6 +45,10 @@ export function normalizeAlert(raw) {
     confidence: raw.confidence != null ? Math.round(raw.confidence * 100) : confFromAttrs(raw.attributes),
     trackId: raw.track_id || raw.trackId,
     bbox: ubbox,
+    attributes: raw.attributes ?? null,
+    identity,
+    badgeNumber,
+    faceImage,
     snapshotUrl: snapshotUrl(raw.camera_id || 'CAM_LIVE', incidentId, snapshot),
     humansDetected: Number(raw.humans_detected || parseAttrsNum(raw.attributes, 'humans_detected') || 0),
     zoneBreaches: raw.zone_breaches || [],
@@ -49,7 +59,7 @@ export function normalizeAlert(raw) {
 }
 
 function parseAttrs(attributes, key) {
-  if (typeof attributes !== 'string') return key ? undefined : attributes;
+  if (typeof attributes !== 'string') return key ? attributes?.[key] : attributes;
   try {
     const o = JSON.parse(attributes);
     return key ? o?.[key] : o;

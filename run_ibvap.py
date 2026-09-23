@@ -886,11 +886,23 @@ def main():
                         if identity != "Unknown" and img_path:
                             try:
                                 import os
-                                # Convert absolute web path /storage/... to local path
+                                # Convert web path /storage/... to a local file.
+                                # Repo storage first (<ibvap>/storage/...), legacy
+                                # (<projects>/storage/...) fallback for older uploads.
                                 local_path = img_path
                                 if local_path.startswith('/storage'):
-                                    local_path = str(Path(__file__).resolve().parent.parent / "storage" / img_path.split('/storage/')[-1])
-                                if os.path.exists(local_path):
+                                    try:
+                                        from face_recognition.core import resolve_known_face_path
+                                        local_path = resolve_known_face_path(img_path) or img_path
+                                    except Exception:
+                                        rel = img_path.split('/storage/')[-1]
+                                        for _base in (Path(__file__).resolve().parent,
+                                                      Path(__file__).resolve().parent.parent):
+                                            _cand = str(_base / "storage" / rel)
+                                            if os.path.exists(_cand):
+                                                local_path = _cand
+                                                break
+                                if local_path and os.path.exists(local_path):
                                     person_img = cv2.imread(local_path)
                                     if person_img is not None:
                                         fh, fw = display.shape[:2]

@@ -48,9 +48,10 @@ export default function DetailPanel({ item, onStatusChange }) {
     }
   }
   
-  const hasIdentity = attrs.identity != null || (item.humansDetected > 0);
-  const identityName = attrs.identity || "Unknown";
-  const imagePath = attrs.image_path;
+  const hasIdentity = attrs.identity != null || item.identity != null || (item.humansDetected > 0);
+  const identityName = attrs.identity || item.identity || "Unknown";
+  const imagePath = attrs.image_path || item.faceImage;
+  const badgeNumber = attrs.badge_number || item.badgeNumber;
 
   return (
     <div className="flex flex-col gap-3">
@@ -118,7 +119,7 @@ export default function DetailPanel({ item, onStatusChange }) {
                     <User size={10} />
                   </div>
                 )}
-                <span>{identityName} {attrs.badge_number ? `(${attrs.badge_number})` : ''}</span>
+                <span>{identityName} {badgeNumber ? `(${badgeNumber})` : ''}</span>
               </dd>
             </>
           )}

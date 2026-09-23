@@ -24,9 +24,10 @@ export default function AlertRow({ item, selected, onSelect }) {
   }
   
   // Only try to show identity if the alert actually involves humans
-  const hasIdentity = attrs.identity != null || (item.humansDetected > 0);
-  const identityName = attrs.identity || "Unknown";
-  const imagePath = attrs.image_path;
+  const hasIdentity = attrs.identity != null || item.identity != null || (item.humansDetected > 0);
+  const identityName = attrs.identity || item.identity || "Unknown";
+  const imagePath = attrs.image_path || item.faceImage;
+  const badgeNumber = attrs.badge_number || item.badgeNumber;
 
   return (
     <div
@@ -63,7 +64,7 @@ export default function AlertRow({ item, selected, onSelect }) {
           
           {hasIdentity && (
             <span className="flex items-center gap-1 text-[10px] font-medium text-fg">
-              Identity: {identityName} {attrs.badge_number ? `(${attrs.badge_number})` : ''}
+              Identity: {identityName} {badgeNumber ? `(${badgeNumber})` : ''}
             </span>
           )}
 
