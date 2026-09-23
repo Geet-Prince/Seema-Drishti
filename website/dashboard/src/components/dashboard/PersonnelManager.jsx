@@ -92,7 +92,7 @@ export default function PersonnelManager({ onClose }) {
           <div className="flex items-center gap-2.5">
             <Fingerprint className="h-5 w-5 text-[#8b5cf6]" style={{ filter: 'drop-shadow(0 0 6px rgba(139,92,246,0.9))' }} />
             <div>
-              <h2 className="font-display text-[13px] font-bold tracking-[0.18em] text-white">PERSONNEL VAULT</h2>
+              <h2 className="font-display text-[13px] font-bold tracking-[0.18em] text-white">SECURITY PERSONNEL</h2>
               <p className="mono text-[9px] tracking-[0.25em] text-[#5f7a95]">BIOMETRIC REGISTRY · CLEARANCE DB</p>
             </div>
           </div>
@@ -155,7 +155,7 @@ export default function PersonnelManager({ onClose }) {
               ) : personnel.length === 0 ? (
                 <div className="mt-10 flex flex-col items-center gap-2 text-center">
                   <Users className="h-8 w-8 text-[#5f7a95]/40" />
-                  <div className="mono text-[11px] tracking-[0.2em] text-[#5f7a95]">VAULT EMPTY</div>
+                  <div className="mono text-[11px] tracking-[0.2em] text-[#5f7a95]">NO PERSONNEL FOUND</div>
                   <div className="mono text-[10px] text-[#5f7a95]/60">Enroll an operative to begin face recognition</div>
                 </div>
               ) : (

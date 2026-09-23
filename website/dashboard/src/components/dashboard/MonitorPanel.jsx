@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { ScanLine } from 'lucide-react';
-import RadarMap from './RadarMap';
 import AlertTabs from './AlertTabs';
 import AlertList from './AlertList';
 
@@ -37,13 +36,7 @@ export default function MonitorPanel({
             <span className="pointer-events-none absolute bottom-2 right-2 h-5 w-5 border-b-2 border-r-2 border-[#ffb020]" style={{ filter: 'drop-shadow(0 0 5px rgba(255,176,32,0.8))' }} />
           </div>
         )}
-        <div className={streamSrc ? 'w-[290px] shrink-0' : 'w-full'}>
-          <RadarMap
-            points={points}
-            selectedId={selectedId}
-            onSelectPoint={(item) => onSelect?.(item._id)}
-          />
-        </div>
+        
       </div>
 
       <div className="hud-panel flex flex-col overflow-hidden">

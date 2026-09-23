@@ -7,7 +7,6 @@ import StatStrip from './StatStrip';
 import CameraPanel from './CameraPanel';
 import MonitorPanel from './MonitorPanel';
 import DetailPanel from './DetailPanel';
-import ZoneRadarPanel from './ZoneRadarPanel';
 import PersonnelManager from './PersonnelManager';
 
 function loadLS(key, fallback) {
@@ -158,23 +157,6 @@ export default function DashboardLayout() {
 
   return (
     <div className="relative flex min-h-screen flex-col bg-void text-fg">
-      {/* ——— ambient sci-fi backdrop ——— */}
-      <div className="pointer-events-none fixed inset-0 z-0">
-        <div
-          className="absolute inset-0 animate-grid-drift opacity-[0.55]"
-          style={{
-            backgroundImage:
-              'linear-gradient(rgba(0,240,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(0,240,255,0.05) 1px, transparent 1px)',
-            backgroundSize: '44px 44px',
-            maskImage: 'radial-gradient(ellipse 90% 70% at 50% 0%, black 30%, transparent 75%)',
-          }}
-        />
-        <div className="absolute -top-40 left-1/4 h-[420px] w-[560px] rounded-full bg-[rgba(0,240,255,0.07)] blur-[130px]" />
-        <div className="absolute -top-24 right-1/5 h-[300px] w-[420px] rounded-full bg-[rgba(139,92,246,0.09)] blur-[120px]" />
-        <div className="absolute bottom-0 left-0 h-[280px] w-[480px] rounded-full bg-[rgba(0,240,255,0.04)] blur-[120px]" />
-        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse 120% 90% at 50% 110%, transparent 55%, rgba(0,0,0,0.55) 100%)' }} />
-      </div>
-
       {showPersonnelModal && <PersonnelManager onClose={() => setShowPersonnelModal(false)} />}
 
       <div className="relative z-10">
@@ -185,33 +167,6 @@ export default function DashboardLayout() {
           onPersonnelClick={() => setShowPersonnelModal(true)}
         />
       </div>
-
-      {/* connection beam */}
-      {connStatus !== 'live' && (
-        <div className="relative z-10 overflow-hidden border-b border-[rgba(255,45,85,0.3)] bg-[rgba(255,45,85,0.07)]">
-          <div className="absolute inset-y-0 w-1/3 animate-beam bg-gradient-to-r from-transparent via-[rgba(255,45,85,0.25)] to-transparent" />
-          <div className="flex items-center justify-center gap-2 px-4 py-1.5">
-            <span className={`h-1.5 w-1.5 rounded-full ${connStatus === 'connecting' ? 'animate-pulse bg-[#ffb020]' : 'bg-[#ff2d55] animate-blink-dot'}`} />
-            <span className="mono text-[10px] tracking-[0.24em] uppercase text-[#9db4cc]">
-              {connStatus === 'connecting' ? '// Re-establishing secure uplink…' : '// Uplink down — tactical cache engaged · showing last known data'}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* critical alert ticker */}
-      {critCount > 0 && connStatus === 'live' && (
-        <div className="relative z-10 overflow-hidden border-b border-[rgba(255,45,85,0.35)] bg-[rgba(255,45,85,0.09)]">
-          <div className="flex items-center gap-3 px-4 py-1.5">
-            <span className="flex items-center gap-1.5 rounded-sm bg-[#ff2d55] px-2 py-0.5 mono text-[9px] font-bold tracking-[0.2em] text-white animate-blink-dot">
-              ▲ THREAT
-            </span>
-            <span className="mono text-[10px] tracking-[0.2em] uppercase text-[#ff8fa3]">
-              {critCount} critical contact{critCount === 1 ? '' : 's'} on scope — immediate review advised
-            </span>
-          </div>
-        </div>
-      )}
 
       <main className="relative z-10 mx-auto flex w-full max-w-[1760px] flex-1 flex-col gap-4 p-4">
         <StatStrip stats={statsLoading && stats.length === 0 ? [] : stats} />
@@ -233,7 +188,7 @@ export default function DashboardLayout() {
               humans={humans}
               streamSrc={activeStreamSrc}
             />
-            <ZoneRadarPanel />
+            
           </div>
 
           <div className="min-w-0 min-[1100px]:order-2 max-[1099px]:order-1">
@@ -264,15 +219,7 @@ export default function DashboardLayout() {
           </div>
         </div>
 
-        <footer className="flex items-center justify-between px-1 pb-1 pt-2">
-          <span className="mono text-[9px] tracking-[0.28em] uppercase text-[#5f7a95]/70">
-            SEEMA DRISHTI ◈ EDGE-NATIVE ◈ ZERO-CLOUD ◈ AES-256
-          </span>
-          <span className="mono text-[9px] tracking-[0.28em] uppercase text-[#5f7a95]/70">
-            SIH 2026 · SSB BORDER GRID
-          </span>
-        </footer>
-      </main>
+        </main>
     </div>
   );
 }

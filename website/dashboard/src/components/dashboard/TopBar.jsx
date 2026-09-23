@@ -59,28 +59,12 @@ export default function TopBar({ sector, onSectorChange, connectionStatus, onPer
               Border Intelligence <span className="text-[#00f0ff]/70">◈ v2.0</span>
             </div>
           </div>
-          <div className="ml-3 hidden items-center gap-1.5 rounded-sm border border-[rgba(0,240,255,0.2)] bg-[rgba(0,240,255,0.05)] px-2 py-1 lg:flex">
-            <span className="mono text-[9px] tracking-[0.2em] text-[#39ff88]" style={{ textShadow: '0 0 8px rgba(57,255,136,0.8)' }}>● SYS.NOMINAL</span>
-          </div>
+          
         </div>
 
         {/* Controls */}
         <div className="flex items-center gap-3">
-          <label className="hidden items-center gap-2 md:flex">
-            <span className="hud-label">Sector</span>
-            <div className="relative">
-              <select
-                value={sector}
-                onChange={(e) => onSectorChange(e.target.value)}
-                className="appearance-none rounded-sm border border-[rgba(0,240,255,0.25)] bg-[rgba(0,240,255,0.06)] py-1.5 pl-3 pr-8 mono text-[11px] uppercase tracking-[0.15em] text-[#e8f4ff] outline-none backdrop-blur-md transition-colors hover:border-[rgba(0,240,255,0.5)] focus:border-[#00f0ff] [&>option]:bg-[#0a1122]"
-              >
-                {SECTORS.map((s) => (
-                  <option key={s.id} value={s.id}>{s.label}</option>
-                ))}
-              </select>
-              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-[#00f0ff]">▼</span>
-            </div>
-          </label>
+          
 
           <button
             onClick={onPersonnelClick}
@@ -96,10 +80,6 @@ export default function TopBar({ sector, onSectorChange, connectionStatus, onPer
                 {time}<span className="ml-1 text-[10px] text-[#00f0ff]/70">:{ms}</span>
               </div>
               <div className="mono text-[8px] tracking-[0.24em] uppercase text-[#5f7a95]">{date} · UTC</div>
-            </div>
-            <div className="h-7 w-px bg-gradient-to-b from-transparent via-[rgba(0,240,255,0.4)] to-transparent" />
-            <div className="mono text-[8px] leading-relaxed tracking-[0.2em] text-[#5f7a95]">
-              SAT-LINK<br /><span className="text-[#39ff88]">ENCRYPTED</span>
             </div>
           </div>
 
