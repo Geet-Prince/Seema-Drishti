@@ -810,7 +810,6 @@ def main():
 
     # Re-enable async background threading (perfectly safe on CPU!)
     async_detector = AsyncDetector(n_cams=len(cam_nodes), target_yolo_fps=15)
-    async_detector.start()
     _last_seq = [-1]  # mutable cell — tracks last YOLO publish seq
 
     # Store cam_nodes reference so the API layer can access fences, etc.
