@@ -75,8 +75,19 @@ def main():
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("End of video stream or cannot read the frame.")
-                break
+                # Loop video files forever instead of exiting at EOF.
+                try:
+                    is_file = float(cap.get(cv2.CAP_PROP_FRAME_COUNT)) > 0
+                except Exception:
+                    is_file = False
+                if is_file:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, frame = cap.read()
+                if not ret:
+                    if is_file:
+                        continue  # transient seek hiccup — retry next iteration
+                    print("End of video stream or cannot read the frame.")
+                    break
 
             frame_id += 1
             timestamp = datetime.now(timezone.utc)

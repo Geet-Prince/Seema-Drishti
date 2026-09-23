@@ -166,6 +166,9 @@ class ThreadedCamera:
     def _update(self):
         fps = 25.0
         frame_time = 1.0 / fps
+        # True when the source is a seekable video file (vs live webcam/RTSP).
+        # Video files loop forever; live sources use the decode-retry path.
+        self._is_file = False
 
         while self.running:
             if not self.is_active:
@@ -176,10 +179,6 @@ class ThreadedCamera:
                 time.sleep(0.5)
                 continue
 
-            if getattr(self, 'video_ended', False):
-                time.sleep(0.1)
-                continue
-
             if self.cap is None:
                 self.cap = cv2.VideoCapture(self.src_str)
                 if self.cap.isOpened():
@@ -187,6 +186,10 @@ class ThreadedCamera:
                     if fps <= 0 or fps > 60:
                         fps = 25.0
                     frame_time = 1.0 / fps
+                    try:
+                        self._is_file = float(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) > 0
+                    except Exception:
+                        self._is_file = False
                 else:
                     print(f"  [WARN] {self.id}: Failed to open {self.src_str}")
                     self._decode_failures += 1
@@ -197,21 +200,34 @@ class ThreadedCamera:
             ret, frame = self.cap.read() if self.cap else (False, None)
 
             if not ret:
-                if self.cap and self.cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0:
-                    # It's a video file and we reached the end. 
-                    # Pause playback until user switches camera away and back.
-                    self.video_ended = True
+                if getattr(self, '_is_file', False):
+                    # Video file reached the end — rewind and loop.
+                    try:
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = self.cap.read()
+                    except Exception:
+                        ret, frame = False, None
+                    if not ret:
+                        # Corrupt tail / can't seek — reopen and start over.
+                        try:
+                            self.cap.release()
+                        except Exception:
+                            pass
+                        self.cap = None
+                        self._decode_failures = 0
+                        continue
                 else:
                     self._decode_failures += 1
                     if self._decode_failures > 100:
                         print(f"  [WARN] {self.id}: Too many decode failures, "
-                              f"re-opening sourceâ€¦")
+                              f"re-opening source…")
                         if self.cap:
                             self.cap.release()
                             self.cap = None
                         self._decode_failures = 0
                         time.sleep(1.0)
-                continue
+                if not ret:
+                    continue
 
             # Good frame â€” reset failure counter.
             self._decode_failures = 0
