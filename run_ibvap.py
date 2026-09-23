@@ -343,7 +343,7 @@ class ConsolidatedBatchedAI:
             self._use_half = True
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             import os as _os
-            self._device = _os.environ.get("IBVAP_DEVICE", "cpu")
+            self._device = _os.environ.get("IBVAP_DEVICE", "mps")
             self._use_half = False
         else:
             self._device = "cpu"
