@@ -344,7 +344,7 @@ class ConsolidatedBatchedAI:
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             import os as _os
             self._device = _os.environ.get("IBVAP_DEVICE", "mps")
-            self._use_half = False
+            self._use_half = True  # M-Series handles FP16 perfectly for 2x speed!
         else:
             self._device = "cpu"
             self._use_half = False
@@ -354,7 +354,7 @@ class ConsolidatedBatchedAI:
         from pathlib import Path
         _default_engine = Path(__file__).resolve().parent / 'yolov8s.engine'
         _ENGINE = Path(os.environ.get('IBVAP_TRT_ENGINE', str(_default_engine)))
-        _FALLBACK = os.environ.get('IBVAP_YOLO_WEIGHTS', 'yolov8n.pt')
+        _FALLBACK = os.environ.get('IBVAP_YOLO_WEIGHTS', 'yolov8s.pt')
 
         # TensorRT .engine only runs on NVIDIA CUDA — never load it on Mac/CPU.
         if _ENGINE.exists() and torch.cuda.is_available() and torch.cuda.device_count() > 0:
@@ -806,7 +806,7 @@ def main():
 
     # AI instantiated in background thread now
     # warmup in background thread
-    async_detector = AsyncDetector(n_cams=len(cam_nodes), target_yolo_fps=10)
+    async_detector = AsyncDetector(n_cams=len(cam_nodes), target_yolo_fps=60) # Unleashed for M5
     _last_seq = [-1]  # mutable cell — tracks last YOLO publish seq
 
     # Store cam_nodes reference so the API layer can access fences, etc.
@@ -1131,10 +1131,10 @@ def main():
             t_render = time.time() - t_render_start
 
             # â”€â”€ FPS Control & Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            # Cap main loop to ~30 FPS to prevent MJPEG bloat and jitter
+            # Cap main loop to ~60 FPS for ultra-smooth M5 rendering
             loop_time = time.time() - t_start
-            if loop_time < 1.0 / 30.0:
-                time.sleep((1.0 / 30.0) - loop_time)
+            if loop_time < 1.0 / 60.0:
+                time.sleep((1.0 / 60.0) - loop_time)
             elapsed = time.time() - t_start
             fps = 1.0 / elapsed if elapsed > 0 else 0
 
