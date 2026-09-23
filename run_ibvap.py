@@ -636,8 +636,9 @@ class AsyncDetector:
         _loop()   -- background thread: pulls latest frames, runs YOLO, publishes
     """
 
-    def __init__(self, batched_ai, target_yolo_fps: int = 10):
-        self._ai = batched_ai
+    def __init__(self, n_cams: int, target_yolo_fps: int = 10):
+        self._ai = None
+        self._n_cams = n_cams
         self._min_interval = 1.0 / target_yolo_fps
 
         self._lock = threading.Lock()
@@ -671,6 +672,9 @@ class AsyncDetector:
             return dict(self._results), self._result_seq
 
     def _loop(self) -> None:
+        # Initialize PyTorch MPS context inside this thread!
+        self._ai = ConsolidatedBatchedAI()
+        self._ai.warmup(n_cams=self._n_cams)
         while self._running:
             if not self._event.wait(timeout=0.05):
                 continue
@@ -800,9 +804,9 @@ def main():
         print(f"Face recognition init failed: {e}")
         face_worker = None
 
-    batched_ai = ConsolidatedBatchedAI()
-    batched_ai.warmup(n_cams=len(cam_nodes))
-    async_detector = AsyncDetector(batched_ai, target_yolo_fps=10)
+    # AI instantiated in background thread now
+    # warmup in background thread
+    async_detector = AsyncDetector(n_cams=len(cam_nodes), target_yolo_fps=10)
     _last_seq = [-1]  # mutable cell — tracks last YOLO publish seq
 
     # Store cam_nodes reference so the API layer can access fences, etc.
