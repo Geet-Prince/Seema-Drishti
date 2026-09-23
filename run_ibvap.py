@@ -231,7 +231,38 @@ class KalmanTracker:
 
 
 # â”€â”€ Threaded Video Capture â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+# -- Smart Motion Gating -------------------------------------------------------
+class MotionDetector:
+    def __init__(self):
+        # MOG2 is extremely fast and robust to lighting changes
+        self.fgbg = cv2.createBackgroundSubtractorMOG2(history=300, varThreshold=30, detectShadows=False)
+        self.cooldown = 0
+        self.skip_frames = 0
+        
+    def has_motion(self, frame) -> bool:
+        self.skip_frames = (self.skip_frames + 1) % 3
+        if self.skip_frames != 0:
+            if self.cooldown > 0:
+                self.cooldown -= 1
+                return True
+            return False
+
+        small = cv2.resize(frame, (320, 180))
+        fgmask = self.fgbg.apply(small)
+        score = cv2.countNonZero(fgmask)
+        
+        # 500 pixels of motion in a 320x180 frame is a solid moving object
+        if score > 300:
+            self.cooldown = 45  # Keep AI awake for 45 frames after motion stops (~1.5s)
+        else:
+            if self.cooldown > 0:
+                self.cooldown -= 1
+                
+        return self.cooldown > 0
+
 class ThreadedCamera:
+
     def __init__(self, src_str: str, cam_id: str, name: str,
                  w: int, h: int, start_active: bool = True):
         self.src_str = src_str
@@ -809,7 +840,7 @@ def main():
         face_worker = None
 
     # Re-enable async background threading (perfectly safe on CPU!)
-    async_detector = AsyncDetector(n_cams=len(cam_nodes), target_yolo_fps=15)
+    async_detector = AsyncDetector(n_cams=len(cam_nodes), target_yolo_fps=2)
     _last_seq = [-1]  # mutable cell — tracks last YOLO publish seq
 
     # Store cam_nodes reference so the API layer can access fences, etc.
@@ -866,7 +897,14 @@ def main():
             # target_yolo_fps (default 10). The render loop never waits.
             t_infer_start = time.time()
             if args.multi_cam_ai:
-                ai_frames, ai_cams = frames, active_cams
+                ai_frames, ai_cams = [], []
+                for f, c in zip(frames, active_cams):
+                    if not hasattr(c, 'motion'):
+                        c.motion = MotionDetector()
+                    # Only run heavy AI if motion is detected (Smart Approach)
+                    if c.motion.has_motion(f):
+                        ai_frames.append(f)
+                        ai_cams.append(c)
             else:
                 ai_cam_id = CAMERA_REGISTRY.active_ai_cam
                 ai_frames, ai_cams = [], []
