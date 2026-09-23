@@ -1,22 +1,5 @@
 {
-  "frame_width": 1920,
-  "frame_height": 1080,
-  "polygon": [
-    [
-      877,
-      950
-    ],
-    [
-      1198,
-      789
-    ],
-    [
-      1095,
-      768
-    ],
-    [
-      822,
-      907
-    ]
-  ]
+  "frame_width": 1280,
+  "frame_height": 720,
+  "polygon": []
 }

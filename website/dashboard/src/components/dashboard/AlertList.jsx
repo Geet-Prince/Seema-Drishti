@@ -1,4 +1,4 @@
-import { ShieldCheck, Folder, ChevronDown, ChevronRight, Camera } from 'lucide-react';
+import { ShieldCheck, Folder, ChevronDown, ChevronRight } from 'lucide-react';
 import AlertRow from './AlertRow';
 import { useState } from 'react';
 
@@ -6,17 +6,13 @@ function Skeleton({ count = 6 }) {
   return (
     <div className="flex flex-col">
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 border-b border-hairline/70 px-3 py-3">
-          <div className="h-2 w-2 animate-pulse rounded-full bg-hairline-2" />
+        <div key={i} className="flex items-center gap-3 border-b border-[rgba(0,240,255,0.07)] px-3 py-3">
+          <div className="h-2 w-2 animate-pulse rounded-full bg-[rgba(0,240,255,0.25)]" />
           <div className="flex-1 space-y-2">
-            <div className="h-3 w-2/3 animate-pulse rounded bg-hairline-2" />
-            <div className="h-2 w-1/2 animate-pulse rounded bg-hairline" />
-            <div className="flex gap-2">
-              <div className="h-2 w-12 animate-pulse rounded bg-hairline" />
-              <div className="h-2 w-12 animate-pulse rounded bg-hairline" />
-            </div>
+            <div className="h-3 w-2/3 animate-pulse rounded bg-white/10" />
+            <div className="h-2 w-1/2 animate-pulse rounded bg-white/5" />
           </div>
-          <div className="h-10 w-10 animate-pulse rounded bg-hairline" />
+          <div className="h-10 w-10 animate-pulse rounded-sm bg-white/5" />
         </div>
       ))}
     </div>
@@ -26,10 +22,12 @@ function Skeleton({ count = 6 }) {
 function Empty({ label }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-      <ShieldCheck className="h-8 w-8 text-nominal/50" />
+      <div className="flex h-14 w-14 items-center justify-center rounded-full border border-[rgba(57,255,136,0.3)] bg-[rgba(57,255,136,0.06)]">
+        <ShieldCheck className="h-6 w-6 text-[#39ff88]" style={{ filter: 'drop-shadow(0 0 6px rgba(57,255,136,0.8))' }} />
+      </div>
       <div>
-        <div className="text-[13px] font-medium text-fg/80">No active {label}</div>
-        <div className="mt-1 text-[11px] text-ghost">All clear. New activity will appear here.</div>
+        <div className="font-display text-[12px] font-semibold tracking-[0.18em] text-white">PERIMETER SECURE</div>
+        <div className="mono mt-1 text-[10px] tracking-[0.15em] text-[#5f7a95]">NO ACTIVE {String(label).toUpperCase()} · SCANNING…</div>
       </div>
     </div>
   );
@@ -37,25 +35,21 @@ function Empty({ label }) {
 
 function CameraFolder({ cameraId, items, selectedId, onSelect }) {
   const [open, setOpen] = useState(true);
-  
   return (
-    <div className="flex flex-col border-b border-hairline/50 last:border-b-0">
-      <button 
+    <div className="flex flex-col border-b border-[rgba(0,240,255,0.08)] last:border-b-0">
+      <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 bg-[#0a0e0b] px-3 py-2 text-left hover:bg-white/5 border-y border-hairline/30 sticky top-0 z-10"
+        className="sticky top-0 z-10 flex items-center gap-2 border-y border-[rgba(0,240,255,0.1)] bg-[rgba(2,4,9,0.9)] px-3 py-2 text-left backdrop-blur-md transition-colors hover:bg-[rgba(0,240,255,0.05)]"
       >
-        {open ? <ChevronDown className="h-3.5 w-3.5 text-ghost" /> : <ChevronRight className="h-3.5 w-3.5 text-ghost" />}
-        <Folder className="h-3.5 w-3.5 text-live/70" fill="currentColor" fillOpacity={0.2} />
-        <span className="mono text-[11px] font-semibold tracking-wider text-fg/90">{cameraId}</span>
-        <span className="ml-auto rounded-full bg-white/10 px-1.5 py-0.5 mono text-[9px] text-ghost">
-          {items.length}
-        </span>
+        {open ? <ChevronDown className="h-3.5 w-3.5 text-[#00f0ff]" /> : <ChevronRight className="h-3.5 w-3.5 text-[#5f7a95]" />}
+        <Folder className="h-3.5 w-3.5 text-[#00f0ff]/70" />
+        <span className="mono text-[11px] font-bold tracking-[0.15em] text-white">{cameraId}</span>
+        <span className="ml-auto rounded-sm border border-[rgba(0,240,255,0.3)] bg-[rgba(0,240,255,0.1)] px-1.5 py-0.5 mono text-[9px] text-[#00f0ff]">{items.length}</span>
       </button>
       {open && (
-        <div className="flex flex-col bg-panel">
+        <div className="flex flex-col">
           {items.map((item) => (
-            <div key={item._id} className="pl-4 border-l-2 border-live/10 ml-4 relative">
-              <div className="absolute left-[-2px] top-0 bottom-0 w-2" />
+            <div key={item._id} className="border-l-2 border-[rgba(0,240,255,0.2)] pl-1">
               <AlertRow item={item} selected={item._id === selectedId} onSelect={onSelect} />
             </div>
           ))}
@@ -66,15 +60,9 @@ function CameraFolder({ cameraId, items, selectedId, onSelect }) {
 }
 
 export default function AlertList({ items = [], loading = false, selectedId, onSelect, label = 'alerts' }) {
-  if (loading) {
-    return <div className="max-h-[460px] flex-1 overflow-y-auto"><Skeleton /></div>;
-  }
-  
-  if (items.length === 0) {
-    return <div className="max-h-[460px] flex-1 overflow-y-auto"><Empty label={label} /></div>;
-  }
+  if (loading) return <div className="max-h-[480px] flex-1 overflow-y-auto"><Skeleton /></div>;
+  if (items.length === 0) return <div className="max-h-[480px] flex-1 overflow-y-auto"><Empty label={label} /></div>;
 
-  // If showing incidents, group by camera
   if (label === 'incidents') {
     const groups = {};
     items.forEach(item => {
@@ -82,24 +70,17 @@ export default function AlertList({ items = [], loading = false, selectedId, onS
       if (!groups[cam]) groups[cam] = [];
       groups[cam].push(item);
     });
-    
     return (
-      <div className="max-h-[460px] flex-1 overflow-y-auto bg-panel-2">
+      <div className="max-h-[480px] flex-1 overflow-y-auto">
         {Object.entries(groups).map(([cam, groupItems]) => (
-          <CameraFolder 
-            key={cam} 
-            cameraId={cam} 
-            items={groupItems} 
-            selectedId={selectedId} 
-            onSelect={onSelect} 
-          />
+          <CameraFolder key={cam} cameraId={cam} items={groupItems} selectedId={selectedId} onSelect={onSelect} />
         ))}
       </div>
     );
   }
 
   return (
-    <div className="max-h-[460px] flex-1 overflow-y-auto">
+    <div className="max-h-[480px] flex-1 overflow-y-auto">
       {items.map((item) => (
         <AlertRow key={item._id} item={item} selected={item._id === selectedId} onSelect={onSelect} />
       ))}

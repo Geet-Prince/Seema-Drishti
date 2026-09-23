@@ -2,12 +2,21 @@
 // component-only (fast-refresh friendly).
 
 export const SEV_COLOR = {
-  critical: 'var(--color-sev-critical)',
-  high: 'var(--color-sev-high)',
-  medium: 'var(--color-sev-medium)',
-  low: 'var(--color-nominal)',
-  nominal: 'var(--color-nominal)',
-  informational: 'var(--color-live)',
+  critical: '#ff2d55',
+  high: '#ff6b2c',
+  medium: '#ffb020',
+  low: '#39ff88',
+  nominal: '#39ff88',
+  informational: '#00f0ff',
+};
+
+export const SEV_GLOW = {
+  critical: 'rgba(255,45,85,0.55)',
+  high: 'rgba(255,107,44,0.5)',
+  medium: 'rgba(255,176,32,0.45)',
+  low: 'rgba(57,255,136,0.4)',
+  nominal: 'rgba(57,255,136,0.4)',
+  informational: 'rgba(0,240,255,0.45)',
 };
 
 export function relTime(iso) {

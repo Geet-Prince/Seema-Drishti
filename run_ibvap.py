@@ -1033,7 +1033,7 @@ def main():
                                 # Convert absolute web path /storage/... to local path
                                 local_path = img_path
                                 if local_path.startswith('/storage'):
-                                    local_path = str(Path(__file__).resolve().parent.parent / "storage" / img_path.split('/storage/')[-1])
+                                    local_path = str(Path(__file__).resolve().parent / "storage" / img_path.split('/storage/')[-1])
                                 if os.path.exists(local_path):
                                     person_img = cv2.imread(local_path)
                                     if person_img is not None:
@@ -1122,6 +1122,10 @@ def main():
             t_render = time.time() - t_render_start
 
             # â”€â”€ FPS Control & Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # Cap main loop to ~30 FPS to prevent MJPEG bloat and jitter
+            loop_time = time.time() - t_start
+            if loop_time < 1.0 / 30.0:
+                time.sleep((1.0 / 30.0) - loop_time)
             elapsed = time.time() - t_start
             fps = 1.0 / elapsed if elapsed > 0 else 0
 

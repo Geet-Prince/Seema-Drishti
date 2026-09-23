@@ -13,7 +13,7 @@ export default function CameraThumbGrid({ cameras = [], activeCameraId, onSelect
         <button
           onClick={() => onSelect?.('__grid__')}
           className={`group relative overflow-hidden rounded-md border text-left transition-colors ${
-            activeCameraId === '__grid__' ? 'border-live/60' : 'border-hairline hover:border-hairline-2'
+            activeCameraId === '__grid__' ? 'border-live/60' : 'border-hairline hover:border-[rgba(0,240,255,0.28)]'
           }`}
           title="All Cameras Grid View"
         >

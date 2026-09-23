@@ -46,7 +46,7 @@ def _reload_all() -> None:
 
 
 # Uploads are stored inside ibvap/storage/known_faces/ which is served at /storage
-STORAGE_DIR = Path(__file__).resolve().parents[2] / "storage" / "known_faces"
+STORAGE_DIR = Path(__file__).resolve().parents[1] / "storage" / "known_faces"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 

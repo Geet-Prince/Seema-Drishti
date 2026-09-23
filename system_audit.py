@@ -132,11 +132,13 @@ check("Vehicle ANPR — module importable and has process()", _vehicle)
 # ─── 12. API endpoints ──────────────────────────────────────────────────────
 def _api():
     from alarm_manager.src.api import app
-    routes = [r.path for r in app.routes]
+    routes = [getattr(r, "path", "") for r in app.routes if hasattr(r, "path")]
     assert "/stream/live" in routes
     assert "/api/events" in routes
     assert "/api/incidents" in routes
     assert "/ws/alerts" in routes
+    # optimization branch routes (ledger verify) — warn, don't fail legacy
+    assert "/api/ledger/verify/{incident_id}" in routes, "ledger verify route missing"
 check("FastAPI — all critical routes registered", _api)
 
 # ─── 13. Frame Buffer ───────────────────────────────────────────────────────
@@ -150,6 +152,52 @@ def _frame_buffer():
     data = LIVE_FRAME.read()
     assert data is not None and len(data) > 0
 check("Frame Buffer — thread-safe read/write works", _frame_buffer)
+
+# ─── 14. Cumulative scoring (optimization branch) ─────────────────────────
+def _score_total():
+    from alarm_manager.src.core import AlarmManager
+    am = AlarmManager()
+    total, best, matched = am._score_total(
+        "human_tracking", {"zone_state": "inside", "activity": "loitering"},
+        object_type="human")
+    # Human Tracked 20 + Fence 40 + Loitering 35 = 95 (docs math must hold)
+    assert total == 95, f"Expected cumulative 95, got {total} matched={[r['name'] for r in matched]}"
+    assert best is not None
+check("Scoring TOTAL — human+fence+loitering sums to 95", _score_total)
+
+# ─── 15. Hash-chain ledger (optimization branch) ──────────────────────────
+def _ledger():
+    from alarm_manager.src.ledger import chain_hash, next_entry, merkle_root
+    h1 = chain_hash("GENESIS", "abc123", 95, "2026-09-21T00:00:00+00:00", "snapshot_001.jpg", {"a": 1})
+    h2 = chain_hash("GENESIS", "abc123", 95, "2026-09-21T00:00:00+00:00", "snapshot_001.jpg", {"a": 1})
+    assert h1 == h2 and len(h1) == 64, "ledger hash must be deterministic sha256"
+    e = next_entry("GENESIS", "abc123", 95, "2026-09-21T00:00:00+00:00")
+    assert e["prev_hash"] == "GENESIS" and len(e["curr_hash"]) == 64
+    assert merkle_root([h1, h2]) != ""
+check("Ledger — hash-chain deterministic + merkle root works", _ledger)
+
+# ─── 16. Mission Control event tables (MC-2) ───────────────────────────────
+def _event_tables():
+    from alarm_manager.src.database import init_db, upsert_intrusion_event, transition_event, get_open_events
+    init_db()
+    upsert_intrusion_event({"event_id": "ESC-AUDIT", "state": "OPEN", "zones": ["north-fence"],
+                            "cameras": ["CAM_01"], "person_keys": ["P-1"], "track_ids": ["CAM_01:h-1"],
+                            "behaviours": ["loitering"], "headcount": 1, "score_max": 55,
+                            "det_count": 3, "opened_at": "2026-09-21T00:00:00+00:00",
+                            "last_seen": "2026-09-21T00:01:00+00:00"})
+    r = transition_event("ESC-AUDIT", "ACKED", actor="audit", reason="check")
+    assert r["to"] == "ACKED", f"transition failed: {r}"
+    opens = get_open_events(10)
+    assert any(o["event_id"] == "ESC-AUDIT" for o in opens)
+check("Mission Control — intrusion_events + transition ACKED works", _event_tables)
+
+# ─── 17. Mission Control API routes (MC-4) ────────────────────────────────
+def _mc_routes():
+    from alarm_manager.src.api import app
+    routes = [getattr(r, "path", "") for r in app.routes if hasattr(r, "path")]
+    assert "/api/zones" in routes, "missing /api/zones"
+    assert "/api/open-events" in routes, "missing /api/open-events"
+check("Mission Control — /api/zones + /api/open-events registered", _mc_routes)
 
 # ─── Print Report ────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)

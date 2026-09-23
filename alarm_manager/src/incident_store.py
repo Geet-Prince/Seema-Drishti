@@ -53,6 +53,7 @@ def load_or_create(incident_id: str, camera_id: str, module: str,
         "snapshots": [],
         "last_snapshot_at": None,
         "confidence": 0.0,
+        "ledger": {"prev_hash": "GENESIS", "curr_hash": "", "updated_at": None, "event_count": 0},
     }
 
 

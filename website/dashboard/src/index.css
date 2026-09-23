@@ -1,49 +1,141 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800;900&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;500;700&display=swap');
 @import 'tailwindcss';
 
 @theme {
-  --color-ink: #0a0e0b;        /* military olive-black canvas */
-  --color-panel: #111712;      /* tactical olive drab panel surface */
-  --color-panel-2: #172119;    /* raised army olive surface */
-  --color-hairline: #223124;   /* muted olive borders */
-  --color-hairline-2: #2f4332; /* hover olive-khaki borders */
-  --color-ghost: #6b7f69;      /* muted camo sage text */
-  --color-dim: #9cb199;        /* secondary sage text */
-  --color-fg: #e4eee2;         /* primary crisp light text */
+  --color-void: #020409;
+  --color-abyss: #060b18;
+  --color-panel: #0a1122;
+  --color-panel-2: #0d1528;
+  --color-glass: rgba(13, 25, 48, 0.72);
+  --color-hairline: rgba(0, 240, 255, 0.14);
+  --color-hairline-2: rgba(0, 240, 255, 0.28);
+  --color-ghost: #5f7a95;
+  --color-dim: #9db4cc;
+  --color-fg: #e8f4ff;
 
-  --color-sev-medium: #f5a623; /* amber / tactical hazard */
-  --color-sev-high: #ff8a3d;   /* orange */
-  --color-sev-critical: #ef4444; /* combat alert red */
-  --color-nominal: #22c55e;    /* tactical army green */
-  --color-live: #4ade80;       /* bright phosphor army green — live/system state */
+  --color-neon: #00f0ff;
+  --color-viol: #8b5cf6;
+  --color-magent: #ff2d78;
+  --color-live: #00f0ff;
+  --color-nominal: #39ff88;
+  --color-sev-medium: #ffb020;
+  --color-sev-high: #ff6b2c;
+  --color-sev-critical: #ff2d55;
 
-  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: 'Orbitron', sans-serif;
+  --font-sans: 'Rajdhani', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Share Tech Mono', 'JetBrains Mono', ui-monospace, monospace;
 
-  --animate-radar-sweep: radar-sweep 4s linear infinite;
-  @keyframes radar-sweep {
-    to { transform: rotate(360deg); }
+  --animate-radar-sweep: radar-sweep 3.2s linear infinite;
+  @keyframes radar-sweep { to { transform: rotate(360deg); } }
+  --animate-pulse-ring: pulse-ring 1.6s ease-out infinite;
+  @keyframes pulse-ring {
+    from { transform: scale(1); opacity: 0.7; }
+    to { transform: scale(2.8); opacity: 0; }
+  }
+  --animate-scan-y: scan-y 7s linear infinite;
+  @keyframes scan-y {
+    0% { top: -12%; } 100% { top: 112%; }
+  }
+  --animate-flicker: flicker 4s linear infinite;
+  @keyframes flicker {
+    0%,100% { opacity: 1; } 92% { opacity: 1; }
+    93% { opacity: 0.6; } 94% { opacity: 1; } 96% { opacity: 0.75; } 97% { opacity: 1; }
+  }
+  --animate-blink-dot: blink-dot 1.2s ease-in-out infinite;
+  @keyframes blink-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  --animate-grid-drift: grid-drift 24s linear infinite;
+  @keyframes grid-drift {
+    from { background-position: 0 0, 0 0; }
+    to { background-position: 56px 56px, 56px 56px; }
+  }
+  --animate-alert-in: alert-in 0.35s cubic-bezier(0.16,1,0.3,1);
+  @keyframes alert-in {
+    from { opacity: 0; transform: translateX(-14px); }
+    to { opacity: 1; transform: none; }
+  }
+  --animate-beam: beam 1.6s linear infinite;
+  @keyframes beam {
+    from { transform: translateX(-100%); } to { transform: translateX(240%); }
   }
 }
 
 @layer base {
-  html, body, #root {
-    height: 100%;
-  }
+  html, body, #root { height: 100%; }
   body {
     margin: 0;
-    background: var(--color-ink);
+    background: var(--color-void);
     color: var(--color-fg);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--color-hairline-2); border-radius: 4px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--color-ghost); }
+  ::-webkit-scrollbar-thumb { background: rgba(0,240,255,0.22); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(0,240,255,0.4); }
+  ::selection { background: rgba(0,240,255,0.3); }
 }
 
 @layer utilities {
   .mono { font-family: var(--font-mono); }
+  .font-display { font-family: var(--font-display); }
   .hairline { border-color: var(--color-hairline); }
+
+  /* ——— Sci-fi HUD panel: clipped corners + glass + neon edge ——— */
+  .hud-panel {
+    position: relative;
+    background: linear-gradient(160deg, rgba(16,28,54,0.92), rgba(6,11,24,0.94));
+    border: 1px solid rgba(0,240,255,0.16);
+    border-radius: 10px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(0,240,255,0.08);
+  }
+  .hud-panel::before,
+  .hud-panel::after {
+    content: '';
+    position: absolute;
+    width: 14px; height: 14px;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .hud-panel::before {
+    top: -1px; left: -1px;
+    border-top: 2px solid var(--color-neon);
+    border-left: 2px solid var(--color-neon);
+    border-top-left-radius: 10px;
+    filter: drop-shadow(0 0 4px rgba(0,240,255,0.8));
+  }
+  .hud-panel::after {
+    bottom: -1px; right: -1px;
+    border-bottom: 2px solid var(--color-neon);
+    border-right: 2px solid var(--color-neon);
+    border-bottom-right-radius: 10px;
+    filter: drop-shadow(0 0 4px rgba(0,240,255,0.8));
+  }
+  .hud-title {
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--color-neon);
+    text-shadow: 0 0 12px rgba(0,240,255,0.55);
+  }
+  .hud-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-ghost);
+  }
+  .scanlines::after {
+    content: '';
+    position: absolute; inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background: repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0,0,0,0.22) 2px 3px);
+    mix-blend-mode: overlay;
+  }
+  .text-glow-cyan { text-shadow: 0 0 14px rgba(0,240,255,0.7); }
+  .text-glow-red { text-shadow: 0 0 14px rgba(255,45,85,0.8); }
 }

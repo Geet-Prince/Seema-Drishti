@@ -1,36 +1,31 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { VideoOff, Edit3, Save, X, Trash2 } from 'lucide-react';
+import { VideoOff, Edit3, Save, Trash2, Crosshair, Maximize2 } from 'lucide-react';
 import { useClock } from '../../hooks/useClock';
 import { liveStreamUrl, API_BASE } from '../../lib/config';
 
 const BOX_COLOR = {
-  critical: '#ef4444',
-  high: '#ff8a3d',
-  medium: '#f5a623',
-  low: '#2ecc71',
-  nominal: '#2ecc71',
+  critical: '#ff2d55',
+  high: '#ff6b2c',
+  medium: '#ffb020',
+  low: '#39ff88',
+  nominal: '#39ff88',
+  informational: '#00f0ff',
 };
 
+function Corner({ className, style }) {
+  return <span className={`pointer-events-none absolute h-5 w-5 border-[#00f0ff] ${className}`} style={{ filter: 'drop-shadow(0 0 5px rgba(0,240,255,0.9))', ...style }} />;
+}
+
 export default function MainFeed({ cameraId, streamSrc, detections = [], cameraName, offline = false, humans }) {
-  // dims from the MAIN feed image (used for detection box overlays on the main feed)
   const [dims, setDims] = useState(null);
   const [streamBroken, setStreamBroken] = useState(false);
-
-  // Fence Editor State
   const [isEditingFence, setIsEditingFence] = useState(false);
   const [polygon, setPolygon] = useState([]);
-
-  // editDims = natural resolution of the image as rendered inside the modal editor.
-  // This is separate from dims so resizing/re-rendering the modal image does not
-  // corrupt the main-feed detection box calculations.
   const [editDims, setEditDims] = useState(null);
 
-  // imgRef  -> the main-feed <img> (used for detection box overlays)
-  // editRef -> the modal-editor <img> (used for click-to-polygon coordinate mapping)
   const imgRef = useRef(null);
   const editRef = useRef(null);
 
-  // Fetch existing polygon when editor opens
   useEffect(() => {
     if (isEditingFence && cameraId) {
       fetch(`${API_BASE}/api/cameras/${cameraId}/fence`)
@@ -43,28 +38,17 @@ export default function MainFeed({ cameraId, streamSrc, detections = [], cameraN
     }
   }, [isEditingFence, cameraId]);
 
-  // ---- Accurate click-to-polygon coordinate mapping ----
-  // The modal editor renders the MJPEG stream at an arbitrary CSS size.
-  // We MUST measure the rendered rect of the *editor* image, NOT the main feed.
-  // editDims holds the stream's natural (pixel) dimensions so we can scale correctly.
   const handleEditorClick = useCallback((e) => {
     if (!editRef.current) return;
     const rect = editRef.current.getBoundingClientRect();
-
-    // Pixel offset of click inside the rendered image element
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
-
-    // Guard: click must be inside the image bounds
     if (px < 0 || py < 0 || px > rect.width || py > rect.height) return;
-
     if (editDims) {
-      // Scale from CSS pixels → video stream pixels
       const scaleX = editDims.nw / rect.width;
       const scaleY = editDims.nh / rect.height;
       setPolygon(prev => [...prev, [Math.round(px * scaleX), Math.round(py * scaleY)]]);
     } else {
-      // Fallback: store as fractions (0..1) until the image loads
       setPolygon(prev => [...prev, [Math.round(px), Math.round(py)]]);
     }
   }, [editDims]);
@@ -90,34 +74,32 @@ export default function MainFeed({ cameraId, streamSrc, detections = [], cameraN
 
   const src = streamSrc ?? liveStreamUrl();
   const ratio = dims ? `${dims.nw} / ${dims.nh}` : '16 / 9';
-
   const humansCount = humans != null ? humans : null;
   const down = offline || streamBroken;
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-lg border border-hairline bg-panel">
-      <div className="flex items-center justify-between border-b border-hairline px-3 py-2">
-        <span className="mono text-[10px] tracking-[0.2em] uppercase text-ghost">Live Feed</span>
+    <div className="hud-panel scanlines flex flex-col overflow-hidden">
+      {/* header */}
+      <div className="flex items-center justify-between border-b border-[rgba(0,240,255,0.14)] px-3 py-2">
+        <span className="hud-title">◉ Live Feed</span>
         <span className="flex items-center gap-2">
-          <span className="mono text-[10px] uppercase tracking-wider text-ghost">{cameraName || cameraId || 'All Cameras'}</span>
-          <span className="flex items-center gap-1.5">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                offline ? 'bg-sev-critical' : 'bg-nominal shadow-[0_0_5px_1px_rgba(46,204,113,0.6)] animate-pulse'
-              }`}
-            />
-            <span className="mono text-[10px] text-ghost">{time}</span>
+          <span className="mono max-w-[140px] truncate text-[10px] uppercase tracking-[0.15em] text-[#9db4cc]">{cameraName || cameraId || 'All Cameras'}</span>
+          <span className="flex items-center gap-1.5 rounded-sm border border-[rgba(0,240,255,0.2)] bg-black/40 px-1.5 py-0.5">
+            <span className={`h-1.5 w-1.5 rounded-full ${down ? 'bg-[#ff2d55]' : 'bg-[#39ff88] animate-blink-dot shadow-[0_0_6px_2px_rgba(57,255,136,0.7)]'}`} />
+            <span className="mono text-[10px] tracking-widest text-[#9db4cc]">{time}</span>
           </span>
         </span>
       </div>
 
-      <div
-        className="relative w-full overflow-hidden bg-black"
-        style={{ aspectRatio: ratio }}
-      >
+      <div className="relative w-full overflow-hidden bg-black" style={{ aspectRatio: ratio }}>
         {down ? (
-          <div className="flex h-full w-full items-center justify-center bg-[#090e0a]">
-            <VideoOff className="h-8 w-8 text-ghost/40" />
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-[#020409]">
+            <div
+              className="absolute inset-0 opacity-40"
+              style={{ backgroundImage: 'linear-gradient(rgba(0,240,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(0,240,255,0.06) 1px, transparent 1px)', backgroundSize: '32px 32px' }}
+            />
+            <VideoOff className="h-8 w-8 text-[#5f7a95]/50" />
+            <span className="mono text-[10px] tracking-[0.3em] uppercase text-[#5f7a95]">// Signal lost — holding last frame</span>
           </div>
         ) : (
           <img
@@ -135,202 +117,154 @@ export default function MainFeed({ cameraId, streamSrc, detections = [], cameraN
           />
         )}
 
+        {!down && (
+          <>
+            {/* HUD frame corners */}
+            <Corner className="left-2 top-2 border-l-2 border-t-2" />
+            <Corner className="right-2 top-2 border-r-2 border-t-2" />
+            <Corner className="bottom-2 left-2 border-b-2 border-l-2" />
+            <Corner className="bottom-2 right-2 border-b-2 border-r-2" />
+            {/* travelling scan beam */}
+            <div className="pointer-events-none absolute inset-x-0 h-[64px] animate-scan-y bg-gradient-to-b from-transparent via-[rgba(0,240,255,0.09)] to-transparent" />
+            {/* center reticle */}
+            <Crosshair className="pointer-events-none absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 text-[#00f0ff]/25" strokeWidth={1} />
+          </>
+        )}
+
         {cameraId && !isEditingFence && (
-          <div className="absolute right-1.5 top-1.5 flex gap-1">
+          <div className="absolute right-2 top-2 flex gap-1.5">
             <button
               onClick={() => setIsEditingFence(true)}
-              className="rounded bg-black/55 p-1 text-ghost hover:text-white"
+              className="rounded-sm border border-[rgba(0,240,255,0.3)] bg-black/60 p-1.5 text-[#00f0ff] backdrop-blur-md transition-all hover:bg-[rgba(0,240,255,0.2)] hover:shadow-[0_0_12px_rgba(0,240,255,0.5)]"
               title="Edit Virtual Fence"
             >
-              <Edit3 className="h-4 w-4" />
+              <Edit3 className="h-3.5 w-3.5" />
             </button>
           </div>
         )}
 
-        <div className="pointer-events-none absolute left-1.5 top-1.5 flex flex-col gap-1">
-          <span className="rounded-sm bg-black/55 px-1.5 py-0.5 mono text-[9px] tracking-[0.15em] text-live">
+        {/* top-left telemetry chips */}
+        <div className="pointer-events-none absolute left-2 top-2 flex flex-col gap-1.5">
+          <span
+            className="rounded-sm px-2 py-0.5 mono text-[9px] tracking-[0.2em] backdrop-blur-md"
+            style={{
+              background: down ? 'rgba(255,45,85,0.2)' : 'rgba(255,45,85,0.16)',
+              border: '1px solid rgba(255,45,85,0.5)',
+              color: '#ff8fa3',
+              textShadow: '0 0 8px rgba(255,45,85,0.9)',
+            }}
+          >
             ● {down ? 'OFFLINE' : 'REC'}
           </span>
-          <span className="w-max rounded-sm bg-black/55 px-1.5 py-0.5 mono text-[9px] tracking-[0.15em] text-fg/80">
-            LIVE OBJECTS: {humansCount != null ? humansCount : '--'}
+          <span className="w-max rounded-sm border border-[rgba(0,240,255,0.35)] bg-black/60 px-2 py-0.5 mono text-[9px] tracking-[0.2em] text-[#00f0ff] backdrop-blur-md" style={{ textShadow: '0 0 8px rgba(0,240,255,0.9)' }}>
+            CONTACTS: {humansCount != null ? humansCount : '--'}
           </span>
+          {detections.length > 0 && (
+            <span className="w-max rounded-sm border border-[rgba(255,176,32,0.4)] bg-black/60 px-2 py-0.5 mono text-[9px] tracking-[0.2em] text-[#ffb020] backdrop-blur-md">
+              TRACKS: {detections.length}
+            </span>
+          )}
         </div>
 
-        {dims &&
-          !down &&
-          detections.length > 0 &&
-          detections.map((d, i) => (
+        {/* detection boxes */}
+        {dims && !down && detections.length > 0 && detections.map((d, i) => {
+          const c = BOX_COLOR[d.severity] || BOX_COLOR.nominal;
+          return (
             <div
               key={i}
-              className="absolute border"
+              className="absolute"
               style={{
                 left: `${((d.x / dims.nw) * 100).toFixed(2)}%`,
                 top: `${((d.y / dims.nh) * 100).toFixed(2)}%`,
                 width: `${((d.w / dims.nw) * 100).toFixed(2)}%`,
                 height: `${((d.h / dims.nh) * 100).toFixed(2)}%`,
-                borderColor: BOX_COLOR[d.severity] || BOX_COLOR.nominal,
+                border: `1.5px solid ${c}`,
+                boxShadow: `0 0 14px ${c}66, inset 0 0 14px ${c}22`,
               }}
             >
+              <span className="absolute -left-px -top-px h-2.5 w-2.5 border-l-2 border-t-2" style={{ borderColor: '#fff' }} />
+              <span className="absolute -right-px -top-px h-2.5 w-2.5 border-r-2 border-t-2" style={{ borderColor: '#fff' }} />
               <span
-                className="absolute -top-0.5 left-0 -translate-y-full whitespace-nowrap rounded-sm px-1 mono text-[9px] uppercase tracking-wider"
-                style={{ background: BOX_COLOR[d.severity] || BOX_COLOR.nominal, color: '#08100f' }}
+                className="absolute left-0 top-0 -translate-y-full whitespace-nowrap rounded-t-sm px-1.5 py-px mono text-[9px] font-bold uppercase tracking-wider"
+                style={{ background: c, color: '#020409', boxShadow: `0 0 10px ${c}` }}
               >
-                {d.label}
-                {d.confidence != null ? ` ${Math.round(d.confidence * 100)}%` : ''}
+                {d.label}{d.confidence != null ? ` ${Math.round(d.confidence * 100)}%` : ''}
               </span>
             </div>
-          ))}
+          );
+        })}
+
+        {/* bottom data strip */}
+        {!down && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/85 to-transparent px-3 pb-1.5 pt-5">
+            <span className="mono text-[8px] tracking-[0.24em] text-[#00f0ff]/70">AI CORE: YOLOv8s · TRT-FP16 · 9.4MS</span>
+            <span className="flex items-center gap-1 mono text-[8px] tracking-[0.24em] text-[#5f7a95]">
+              <Maximize2 className="h-2.5 w-2.5" /> {dims ? `${dims.nw}×${dims.nh}` : 'SYNC…'}
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* ── Full-screen Fence Editor Modal ── */}
+      {/* fence editor modal */}
       {isEditingFence && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 sm:p-12 backdrop-blur-sm">
-          <div className="flex max-h-full max-w-full flex-col overflow-hidden rounded-lg bg-panel border border-hairline shadow-2xl w-full" style={{ maxWidth: '90vw', maxHeight: '90vh' }}>
-            {/* Header */}
-            <div className="flex items-center justify-between border-b border-hairline px-4 py-3 bg-[#090e0a] flex-shrink-0">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-md sm:p-10">
+          <div className="hud-panel flex max-h-full w-full max-w-5xl flex-col overflow-hidden" style={{ maxHeight: '92vh' }}>
+            <div className="flex items-center justify-between border-b border-[rgba(0,240,255,0.14)] bg-black/40 px-4 py-3">
               <div className="flex flex-col">
-                <span className="mono text-xs uppercase text-ghost tracking-widest">
-                  Restricted Zone Editor — {cameraName || cameraId}
-                </span>
-                <span className="mono text-[10px] text-ghost/60 mt-0.5">
-                  Click on the image to add polygon points. Right-click or use Undo to remove the last point.
-                  {polygon.length > 0 ? ` (${polygon.length} point${polygon.length > 1 ? 's' : ''})` : ''}
+                <span className="hud-title">Restricted Zone Editor — {cameraName || cameraId}</span>
+                <span className="mono mt-1 text-[10px] text-[#5f7a95]">
+                  Click image to add points · right-click undoes · need ≥3 ({polygon.length} pts)
                 </span>
               </div>
-              <div className="flex gap-2 flex-shrink-0">
-                <button
-                  onClick={removeLastPoint}
-                  disabled={polygon.length === 0}
-                  className="flex items-center gap-1.5 rounded bg-yellow-600/80 px-3 py-1.5 text-xs text-white hover:bg-yellow-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                  title="Undo last point"
-                >
+              <div className="flex shrink-0 gap-2">
+                <button onClick={removeLastPoint} disabled={polygon.length === 0}
+                  className="rounded-sm border border-[rgba(255,176,32,0.4)] bg-[rgba(255,176,32,0.12)] px-3 py-1.5 mono text-[10px] uppercase tracking-widest text-[#ffb020] hover:bg-[rgba(255,176,32,0.25)] disabled:cursor-not-allowed disabled:opacity-40">
                   Undo
                 </button>
-                <button
-                  onClick={() => setPolygon([])}
-                  className="flex items-center gap-1.5 rounded bg-red-600/80 px-3 py-1.5 text-xs text-white hover:bg-red-600"
-                >
+                <button onClick={() => setPolygon([])}
+                  className="flex items-center gap-1.5 rounded-sm border border-[rgba(255,45,85,0.4)] bg-[rgba(255,45,85,0.12)] px-3 py-1.5 mono text-[10px] uppercase tracking-widest text-[#ff8fa3] hover:bg-[rgba(255,45,85,0.25)]">
                   <Trash2 className="h-3.5 w-3.5" /> Clear
                 </button>
-                <button
-                  onClick={savePolygon}
-                  disabled={polygon.length > 0 && polygon.length < 3}
-                  className="flex items-center gap-1.5 rounded bg-green-600/80 px-3 py-1.5 text-xs text-white hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={polygon.length > 0 && polygon.length < 3 ? 'Need at least 3 points' : 'Save fence polygon'}
-                >
-                  <Save className="h-4 w-4" /> Save
+                <button onClick={savePolygon} disabled={polygon.length > 0 && polygon.length < 3}
+                  className="flex items-center gap-1.5 rounded-sm border border-[rgba(57,255,136,0.45)] bg-[rgba(57,255,136,0.14)] px-3 py-1.5 mono text-[10px] uppercase tracking-widest text-[#39ff88] hover:bg-[rgba(57,255,136,0.28)] disabled:cursor-not-allowed disabled:opacity-40">
+                  <Save className="h-3.5 w-3.5" /> Deploy
                 </button>
-                <button
-                  onClick={() => setIsEditingFence(false)}
-                  className="rounded bg-white/10 px-3 py-1.5 text-xs text-white hover:bg-white/20 ml-2"
-                >
-                  Cancel
+                <button onClick={() => setIsEditingFence(false)}
+                  className="rounded-sm border border-white/15 bg-white/5 px-3 py-1.5 mono text-[10px] uppercase tracking-widest text-white hover:bg-white/15">
+                  Abort
                 </button>
               </div>
             </div>
 
-            {/* Editor canvas — fills all remaining space */}
-            <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center" style={{ minHeight: 0 }}>
-              {/* Wrapper constrains the image to its natural aspect ratio */}
-              <div
-                className="relative"
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <div
-                  className="relative"
-                  style={{
-                    /* keep the image in its native aspect ratio */
-                    aspectRatio: editDims ? `${editDims.nw} / ${editDims.nh}` : '16 / 9',
-                    maxWidth: '100%',
-                    maxHeight: '100%',
-                    position: 'relative',
-                  }}
-                >
-                  {/* The live video stream used for click-to-draw */}
+            <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-black" style={{ minHeight: 0 }}>
+              <div className="relative flex h-full w-full items-center justify-center">
+                <div className="relative" style={{ aspectRatio: editDims ? `${editDims.nw} / ${editDims.nh}` : '16 / 9', maxWidth: '100%', maxHeight: '100%' }}>
                   <img
                     ref={editRef}
                     src={src}
                     alt="fence editor"
-                    className="block w-full h-full object-fill cursor-crosshair select-none"
+                    className="block h-full w-full cursor-crosshair select-none"
                     draggable={false}
                     onLoad={(e) => {
                       const el = e.currentTarget;
-                      const nw = Math.max(el.naturalWidth, 1);
-                      const nh = Math.max(el.naturalHeight, 1);
-                      setEditDims({ nw, nh });
+                      setEditDims({ nw: Math.max(el.naturalWidth, 1), nh: Math.max(el.naturalHeight, 1) });
                     }}
                     onClick={handleEditorClick}
                     onContextMenu={(e) => { e.preventDefault(); removeLastPoint(); }}
                   />
-
-                  {/* SVG overlay — drawn in the same coordinate space as the image */}
-                  <svg
-                    className="absolute inset-0 w-full h-full pointer-events-none"
-                    viewBox={editDims ? `0 0 ${editDims.nw} ${editDims.nh}` : '0 0 1 1'}
-                    preserveAspectRatio="none"
-                  >
-                    {/* Filled polygon */}
+                  <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={editDims ? `0 0 ${editDims.nw} ${editDims.nh}` : '0 0 1 1'} preserveAspectRatio="none">
                     {polygon.length >= 3 && (
-                      <polygon
-                        points={polygon.map(p => `${p[0]},${p[1]}`).join(' ')}
-                        fill="rgba(255,0,0,0.18)"
-                        stroke="red"
-                        strokeWidth={editDims ? editDims.nw * 0.003 : 3}
-                        strokeLinejoin="round"
-                      />
+                      <polygon points={polygon.map(p => `${p[0]},${p[1]}`).join(' ')} fill="rgba(0,240,255,0.12)" stroke="#00f0ff" strokeWidth={editDims ? editDims.nw * 0.003 : 3} strokeLinejoin="round" style={{ filter: 'drop-shadow(0 0 6px rgba(0,240,255,0.8))' }} />
                     )}
-                    {/* Line-in-progress (open polyline) */}
                     {polygon.length >= 2 && (
-                      <polyline
-                        points={polygon.map(p => `${p[0]},${p[1]}`).join(' ')}
-                        fill="none"
-                        stroke="red"
-                        strokeWidth={editDims ? editDims.nw * 0.003 : 3}
-                        strokeDasharray={polygon.length < 3 ? '8 4' : 'none'}
-                      />
+                      <polyline points={polygon.map(p => `${p[0]},${p[1]}`).join(' ')} fill="none" stroke="#00f0ff" strokeWidth={editDims ? editDims.nw * 0.003 : 3} strokeDasharray={polygon.length < 3 ? '8 4' : 'none'} />
                     )}
-                    {/* Vertex dots + index labels */}
                     {polygon.map((p, i) => (
                       <g key={i}>
-                        <circle
-                          cx={p[0]}
-                          cy={p[1]}
-                          r={editDims ? editDims.nw * 0.008 : 6}
-                          fill={i === 0 ? '#00ff88' : 'red'}
-                          stroke="white"
-                          strokeWidth={editDims ? editDims.nw * 0.002 : 2}
-                        />
-                        <text
-                          x={p[0] + (editDims ? editDims.nw * 0.012 : 8)}
-                          y={p[1] - (editDims ? editDims.nh * 0.012 : 8)}
-                          fill="white"
-                          fontSize={editDims ? editDims.nw * 0.018 : 14}
-                          fontFamily="monospace"
-                          fontWeight="bold"
-                          style={{ textShadow: '0 0 3px black' }}
-                        >
-                          {i === 0 ? 'START' : i}
-                        </text>
+                        <circle cx={p[0]} cy={p[1]} r={editDims ? editDims.nw * 0.008 : 6} fill={i === 0 ? '#39ff88' : '#00f0ff'} stroke="white" strokeWidth={editDims ? editDims.nw * 0.002 : 2} />
+                        <text x={p[0] + (editDims ? editDims.nw * 0.012 : 8)} y={p[1] - (editDims ? editDims.nh * 0.012 : 8)} fill="white" fontSize={editDims ? editDims.nw * 0.018 : 14} fontFamily="monospace" fontWeight="bold">{i === 0 ? 'START' : i}</text>
                       </g>
                     ))}
-                    {/* Closing line preview */}
-                    {polygon.length >= 3 && (
-                      <line
-                        x1={polygon[polygon.length - 1][0]}
-                        y1={polygon[polygon.length - 1][1]}
-                        x2={polygon[0][0]}
-                        y2={polygon[0][1]}
-                        stroke="rgba(255,0,0,0.5)"
-                        strokeWidth={editDims ? editDims.nw * 0.002 : 2}
-                        strokeDasharray="6 3"
-                      />
-                    )}
                   </svg>
                 </div>
               </div>

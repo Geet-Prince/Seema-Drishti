@@ -1,0 +1,43 @@
+# CCTV Live Config — COPY to cctv.live.yaml (never commit live file)
+# cp configs/cctv.example.yaml configs/cctv.live.yaml
+# Then put real border outpost RTSP / ONVIF URLs.
+# run_ibvap.py currently takes --source directly; this file is the
+# operator record of which CCTV maps to which CAM_ID + fence file.
+#
+# Border deployment pattern (edge PC at outpost):
+#   CAM_01 = Gate CCTV (RTSP TCP, 1080p, 15fps — enough for AI, saves bandwidth)
+#   CAM_02 = Fence line CCTV
+#   CAM_03 = Road / vehicle entry
+# Tip: use TCP transport (?tcp) and lower sub-stream for AI, main-stream for evidence.
+
+cameras:
+  - id: CAM_01
+    name: "North Fence Gate CCTV"
+    source: "rtsp://user:pass@192.168.1.101:554/cam/realmonitor?channel=1&subtype=1&tcp"
+    fence_file: "virtual_fence/CAM_01_roi.json"
+    ai_enabled: true
+    notes: "Gate — primary intrusion axis. Calibrate polygon via /ui then POST /api/cameras/CAM_01/fence"
+
+  - id: CAM_02
+    name: "South Entry Road CCTV"
+    source: "rtsp://user:pass@192.168.1.102:554/cam/realmonitor?channel=1&subtype=1&tcp"
+    fence_file: "virtual_fence/CAM_02_roi.json"
+    ai_enabled: true
+    notes: "Road — vehicle + ANPR priority"
+
+  - id: CAM_03
+    name: "Riverine Gap CCTV"
+    source: "rtsp://user:pass@192.168.1.103:554/stream1"
+    fence_file: "virtual_fence/CAM_03_roi.json"
+    ai_enabled: false
+    notes: "Thumbnail-only until GPU headroom confirmed. Enable via /api/cameras/CAM_03/select"
+
+network:
+  rtsp_transport: tcp
+  reconnect_seconds: 2
+  decode_fail_limit: 100
+
+edge:
+  default_mode: "single-ai-cam"
+  multi_cam_ai_flag: "--multi-cam-ai"
+  honest_note: "On 4GB edge GPU use single-AI-cam (selected) @25-30FPS + all-cam thumbnails. Use --multi-cam-ai only for 2-4 cams."

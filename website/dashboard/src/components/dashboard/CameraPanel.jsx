@@ -11,7 +11,7 @@ export default function CameraPanel({
   streamSrc,
 }) {
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex flex-col gap-4">
       <MainFeed
         cameraId={activeCamera?.id}
         cameraName={activeCamera?.name}
@@ -21,11 +21,12 @@ export default function CameraPanel({
         humans={humans}
       />
 
-      {/* 4-camera quad grid — raw MJPEG, auto-rotates highlight every 8s */}
-      <div className="flex flex-col overflow-hidden rounded-lg border border-hairline bg-panel">
-        <div className="flex items-center justify-between border-b border-hairline px-3 py-2">
-          <span className="mono text-[10px] tracking-[0.2em] uppercase text-ghost">Live Cameras</span>
-          <span className="mono text-[10px] text-ghost">{cameras.length} feed{cameras.length === 1 ? '' : 's'}</span>
+      <div className="hud-panel flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between border-b border-[rgba(0,240,255,0.14)] px-3 py-2">
+          <span className="hud-title">▦ Camera Grid</span>
+          <span className="mono rounded-sm border border-[rgba(0,240,255,0.25)] bg-[rgba(0,240,255,0.07)] px-1.5 py-0.5 text-[9px] tracking-[0.2em] text-[#00f0ff]">
+            {cameras.length} FEED{cameras.length === 1 ? '' : 'S'}
+          </span>
         </div>
         <QuadView
           cameras={cameras}

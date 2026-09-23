@@ -28,6 +28,7 @@ rules:
     object_type: human
     attribute: zone_state
     equals: inside
+    match_any_module: true
     score: 40
     severity: high
     capture_snapshot: true
@@ -37,12 +38,14 @@ rules:
     object_type: vehicle
     attribute: zone_state
     equals: inside
+    match_any_module: true
     score: 40
     severity: high
     capture_snapshot: true
 
   - name: "Suspicious Activity"
     module: suspicious_activity
+    match_any_module: true
     score: 35
     severity: medium
     capture_snapshot: true
@@ -51,6 +54,7 @@ rules:
     module: anpr
     attribute: watchlist_match
     equals: true
+    match_any_module: true
     score: 50
     severity: critical
     capture_snapshot: true
@@ -65,6 +69,7 @@ rules:
     module: human_tracking
     attribute: activity
     equals: loitering
+    match_any_module: true
     score: 35
     severity: medium
     capture_snapshot: true
@@ -73,6 +78,7 @@ rules:
     module: human_tracking
     attribute: activity
     equals: erratic_movement
+    match_any_module: true
     score: 30
     severity: medium
     capture_snapshot: true
@@ -81,6 +87,7 @@ rules:
     module: human_tracking
     attribute: activity
     equals: crowd_formation
+    match_any_module: true
     score: 35
     severity: medium
     capture_snapshot: true

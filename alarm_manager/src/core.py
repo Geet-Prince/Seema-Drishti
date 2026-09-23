@@ -18,6 +18,8 @@ import yaml
 from contracts.schema import DetectionResult
 from alarm_manager.src.database import init_db, log_activity, log_event
 from alarm_manager.src import incident_store
+from alarm_manager.src import ledger as _ledger
+from alarm_manager.src import grouper as _grouper
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,12 @@ class AlarmManager:
         self._last_alert: dict[str, float] = {}
         self._last_flush = time.time()
         self._last_known_plates: dict[str, str] = {}
+        # MC-7 continuous intrusion sessions: in-memory event store fed by every
+        # scored object. Dossier keeps appending while intrusion active; gaps
+        # < T_WINDOW (90s) chain, so e.g. 10 people over 5 min = ONE event.
+        self._event_store: dict = {}
+        self._last_group_upsert: dict[str, float] = {}
+        self._last_sweep: float = 0.0
         valid_rules = sum(1 for r in self._rules if r.get("module"))
         logger.info(f"AlarmManager v2 ready. Loaded {len(self._rules)} rules from {_RULES_PATH} (valid modules: {valid_rules}).")
 
@@ -106,8 +114,43 @@ class AlarmManager:
                     if current_time - start_time < 1.5:
                         continue # Suppress alarms for first 1.5s
             
-            score, matched_rule = self._score(result.module, obj.attributes, obj.object_type)
-            label = matched_rule["severity"].capitalize() if matched_rule else _danger_label(score, self._thresholds)
+            score, matched_rule, matched_rules = self._score_total(result.module, obj.attributes, obj.object_type)
+            label = _danger_label(score, self._thresholds)
+
+            # ── MC-7 continuous intrusion session (grouped dossier) ──
+            # Ingest EVERY scored object into the grouper BEFORE low-score skip,
+            # so the session spans the whole intrusion until silence > T_WINDOW.
+            try:
+                _zone = obj.attributes.get("zone_id")
+                if not _zone and obj.attributes.get("zone_state") == "inside":
+                    _zone = "border_fence"
+                _ev, _ = _grouper.ingest_detection(
+                    self._event_store, result.camera_id, obj.track_id,
+                    _zone, obj.attributes.get("activity"), score,
+                    obj.attributes.get("centroid"), obj.attributes,
+                    now=result.timestamp_utc.timestamp())
+                obj.attributes["event_id"] = _ev.id
+                obj.attributes["event_headcount"] = _ev.headcount
+                _now_w = time.time()
+                if _now_w - self._last_group_upsert.get(_ev.id, 0) > 2.0:
+                    from alarm_manager.src.database import upsert_intrusion_event
+                    _u = _ev.to_update()
+                    _u["person_keys"] = sorted(_ev.person_keys)
+                    _u["track_ids"] = sorted(_ev.track_ids)
+                    upsert_intrusion_event(_u)
+                    self._last_group_upsert[_ev.id] = _now_w
+                if _now_w - self._last_sweep > 5.0:
+                    self._last_sweep = _now_w
+                    from alarm_manager.src.database import upsert_intrusion_event as _up2
+                    for _upd in _grouper.sweep(self._event_store, now=_now_w):
+                        _upd["person_keys"] = []
+                        _upd["track_ids"] = []
+                        try:
+                            _up2(_upd)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
             # Always log to activity_log
             log_activity(
@@ -147,6 +190,23 @@ class AlarmManager:
                 plate_file = f"plate_{plate_no}.jpg"
                 if plate_file not in meta["snapshots"]:
                     meta["snapshots"].append(plate_file)
+
+            # ── Free offline hash-chain (tamper evidence, blockchain-anchor ready) ──
+            try:
+                _prev = (meta.get("ledger") or {}).get("curr_hash") or _ledger.GENESIS
+                _snap_hash = meta["snapshots"][-1] if meta["snapshots"] else ""
+                _link = _ledger.next_entry(
+                    _prev, incident_id, score,
+                    result.timestamp_utc.isoformat(),
+                    _snap_hash, obj.attributes)
+                meta["ledger"] = {
+                    "prev_hash": _link["prev_hash"],
+                    "curr_hash": _link["curr_hash"],
+                    "updated_at": result.timestamp_utc.isoformat(),
+                    "event_count": int((meta.get("ledger") or {}).get("event_count", 0)) + 1,
+                }
+            except Exception:
+                pass
                     
             # Adaptive snapshot: only capture if enough time has passed
             snapshot_file = None
@@ -184,6 +244,9 @@ class AlarmManager:
                         self._last_known_plates[incident_id] = plate_no
                     self._last_alert[incident_id] = now
                     
+                    _ev_attrs = dict(obj.attributes)
+                    _ev_attrs["ledger_hash"] = (meta.get("ledger") or {}).get("curr_hash", "")
+                    _ev_attrs["matched_rules"] = [r.get("name") for r in matched_rules]
                     log_event(
                         event_id=incident_id,
                         event_type=matched_rule["name"].upper().replace(" ", "_"),
@@ -195,7 +258,7 @@ class AlarmManager:
                         # Wait, we pass the latest snapshot from meta instead of just this frame's snapshot!
                         snapshot_path=meta["snapshots"][-1] if meta["snapshots"] else "",
                         module=effective_module,
-                        attributes=obj.attributes,
+                        attributes=_ev_attrs,
                     )
 
                     alert = {
@@ -204,6 +267,8 @@ class AlarmManager:
                         "severity":       matched_rule["severity"],
                         "danger_label":   label,
                         "danger_score":   score,
+                        "matched_rules":  [r.get("name") for r in matched_rules],
+                        "ledger_hash":    (meta.get("ledger") or {}).get("curr_hash"),
                         "camera_id":      result.camera_id,
                         "track_id":       obj.track_id,
                         "module":         effective_module,
@@ -219,34 +284,77 @@ class AlarmManager:
                     self._broadcast(alert)
 
     # ── Scoring ─────────────────────────────────────────────────────────
+    def _rule_matches(self, rule: dict, module: str, attributes: dict, object_type: str = None) -> bool:
+        """Attribute rules fire regardless of producing module (pipeline enriches in-place).
+
+        WHY: run_ibvap.py enriches one DetectionResult in-place (human_tracking ->
+        suspicious -> fence) so module stays 'human_tracking' even when
+        activity/zone_state/plate_no are set. Requiring exact module match
+        made suspicious_activity/anpr rules dead code. Fix: if a rule defines
+        an attribute condition and that condition holds, allow cross-module
+        match when rule sets match_any_module OR attribute is a known
+        cross-module signal.
+        """
+        CROSS_MODULE_ATTRS = {"activity", "zone_state", "watchlist_match", "plate_no"}
+        if "object_type" in rule and rule["object_type"] != object_type:
+            return False
+        if "attribute" in rule:
+            val = attributes.get(rule["attribute"])
+            if rule.get("equals") is not None and val != rule["equals"]:
+                return False
+            if rule.get("gte") is not None and (val is None or val < rule["gte"]):
+                return False
+            # Attribute condition holds — accept if module matches or rule is cross-module.
+            if rule.get("module") == module:
+                return True
+            if rule.get("match_any_module"):
+                return True
+            if rule.get("attribute") in CROSS_MODULE_ATTRS:
+                return True
+            return False
+        # No attribute condition — require exact module match (presence rules).
+        return rule.get("module") == module
+
+    def _rule_score(self, rule: dict) -> int:
+        sev = rule.get("severity", "informational").lower()
+        score = rule.get("score")
+        if score is None:
+            if sev == "critical": score = 90
+            elif sev == "high": score = 70
+            elif sev == "medium": score = 50
+            elif sev == "low": score = 30
+            else: score = 10
+        return int(score)
+
     def _score(self, module: str, attributes: dict, object_type: str = None) -> tuple[int, Optional[dict]]:
+        # Legacy max-wins kept for backward-compat audits; new code uses _score_total.
         best_rule, best_score = None, 0
         for rule in self._rules:
-            if rule.get("module") != module:
+            if not self._rule_matches(rule, module, attributes, object_type):
                 continue
-            if "object_type" in rule and rule["object_type"] != object_type:
-                continue
-            if "attribute" in rule:
-                val = attributes.get(rule["attribute"])
-                if rule.get("equals") is not None and val != rule["equals"]:
-                    continue
-                if rule.get("gte") is not None and (val is None or val < rule["gte"]):
-                    continue
-            
-            # Map severity to a base score if 'score' isn't provided
-            sev = rule.get("severity", "informational").lower()
-            score = rule.get("score")
-            if score is None:
-                if sev == "critical": score = 90
-                elif sev == "high": score = 70
-                elif sev == "medium": score = 50
-                elif sev == "low": score = 30
-                else: score = 10
-                
+            score = self._rule_score(rule)
             if score > best_score:
                 best_score = score
                 best_rule  = rule
         return best_score, best_rule
+
+    def _score_total(self, module: str, attributes: dict, object_type: str = None) -> tuple[int, Optional[dict], list]:
+        """Cumulative scoring: sum all matching rules (capped 0-100).
+
+        Returns (total, best_rule, matched_rules). best_rule = highest single
+        rule, used for event_type/severity label. total drives danger_label
+        and adaptive snapshot rate so docs math (20+40+35=95 CRITICAL) is true.
+        """
+        matched = []
+        for rule in self._rules:
+            if not self._rule_matches(rule, module, attributes, object_type):
+                continue
+            matched.append(rule)
+        if not matched:
+            return 0, None, []
+        total = min(100, sum(self._rule_score(r) for r in matched))
+        best_rule = max(matched, key=self._rule_score)
+        return total, best_rule, matched
 
     # ── Broadcast ───────────────────────────────────────────────────────
     def _broadcast(self, alert: dict) -> None:

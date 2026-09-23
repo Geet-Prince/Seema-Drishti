@@ -8,9 +8,19 @@ __pycache__/
 # Model weights (too large for git — download on first run)
 *.pt
 yolov8n.pt
+*.engine
+yolov8s.engine
 *.pth
 *.onnx
 *.weights
+*.trt
+
+# Local venv / edge PC env (never commit)
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
 
 # Storage — snapshots, videos, database (live data, not code)
 storage/media/
@@ -18,7 +28,13 @@ video.mp4
 video2.mp4
 storage/incidents/
 storage/events.db
+storage/events.db-wal
+storage/events.db-shm
+storage/plates/
 storage/sync_queue/
+
+# Local live camera secrets (RTSP user:pass) — never commit
+configs/cctv.live.yaml
 
 # Test/verify scripts
 verify_pipeline.py
