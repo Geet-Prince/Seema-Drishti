@@ -4,7 +4,16 @@ import cv2
 
 class PlateReader:
     def __init__(self):
-        self.reader = easyocr.Reader(['en'], gpu=True)
+        import platform
+        try:
+            import torch
+            # easyocr gpu=True + torch MPS in a background thread races with
+            # YOLO MPS inference and aborts macOS (command-buffer assertion).
+            # Only enable GPU when real CUDA is present; CPU elsewhere.
+            use_gpu = bool(torch.cuda.is_available() and platform.system() != "Darwin")
+        except Exception:
+            use_gpu = False
+        self.reader = easyocr.Reader(['en'], gpu=use_gpu)
         self.pattern = re.compile(r'[^A-Z0-9]')
 
     def read_plate(self, frame, bbox=None):

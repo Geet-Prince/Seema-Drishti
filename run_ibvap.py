@@ -231,10 +231,25 @@ class ThreadedCamera:
 
 # Helper to get the best acceleration device for the host machine
 def get_best_device():
+    import os
+    import platform
+    # Explicit override: IBVAP_DEVICE=cpu|cuda|mps
+    forced = os.environ.get("IBVAP_DEVICE", "").strip().lower()
+    if forced in ("cpu", "cuda", "cuda:0", "mps"):
+        return "cuda:0" if forced == "cuda" else forced
     if torch.cuda.is_available():
         return "cuda:0"
+    # NOTE: PyTorch MPS backend is NOT thread-safe and aborts sustained
+    # YOLO video inference on macOS with:
+    #   AGXG17GFamilyCommandBuffer ... failed assertion `A command encoder
+    #   is already encoding to this command buffer' -> zsh: abort
+    # This is triggered by back-to-back predict() calls and/or concurrent
+    # torch use from worker threads (ANPR/face). Force CPU on macOS for
+    # stability. Set IBVAP_DEVICE=mps to opt back into MPS at your own risk.
+    if platform.system() == "Darwin":
+        return "cpu"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"   # Apple Silicon GPU acceleration
+        return "mps"   # Apple Silicon GPU acceleration (non-Darwin only)
     return "cpu"
 
 
@@ -300,6 +315,22 @@ class ConsolidatedBatchedAI:
             except Exception as exc:
                 print(f'  [WARN] ANPR init failed: {exc}')
 
+        # Serialise all torch inference through one lock. PyTorch MPS is not
+        # thread-safe; even on CUDA/CPU this avoids surprises when the ANPR
+        # worker (easyocr/torch) runs concurrently with YOLO.
+        import threading as _th
+        self._infer_lock = _th.Lock()
+        # Keep CPU thread usage bounded so background decode/render threads
+        # don't starve inference (tune via IBVAP_TORCH_THREADS).
+        try:
+            import os as _os
+            _n = int(_os.environ.get("IBVAP_TORCH_THREADS", "4"))
+            if _n >= 1:
+                torch.set_num_threads(_n)
+                torch.set_num_interop_threads(1)
+        except Exception:
+            pass
+
     def _anpr_worker_loop(self):
         import hashlib, cv2
         from pathlib import Path
@@ -331,28 +362,35 @@ class ConsolidatedBatchedAI:
 
     def warmup(self, n_cams: int = 1) -> None:
         try:
-            if getattr(self, '_using_trt', False):
-                # Init the predictor with a single frame
-                self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=self.device, verbose=False)
-                backend = getattr(self.model.predictor, 'model', None)
-                if backend and hasattr(backend, 'bindings'):
-                    shape = backend.bindings['images'].shape
-                    self.max_batch = int(shape[0]) if shape[0] > 0 else 1
-                    self.is_dynamic_batch = getattr(backend, 'dynamic', False)
+            with self._infer_lock:
+                if getattr(self, '_using_trt', False):
+                    # Init the predictor with a single frame
+                    self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=self.device, verbose=False)
+                    backend = getattr(self.model.predictor, 'model', None)
+                    if backend and hasattr(backend, 'bindings'):
+                        shape = backend.bindings['images'].shape
+                        self.max_batch = int(shape[0]) if shape[0] > 0 else 1
+                        self.is_dynamic_batch = getattr(backend, 'dynamic', False)
+                    else:
+                        self.max_batch = 1
+                        self.is_dynamic_batch = False
+                    print(f'  [GPU] TRT Model max batch size: {self.max_batch} (dynamic: {self.is_dynamic_batch})')
+                    if self.max_batch > 1:
+                        dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * min(n_cams, self.max_batch)
+                        self.model.predict(dummy, device=self.device, verbose=False)
                 else:
-                    self.max_batch = 1
-                    self.is_dynamic_batch = False
-                print(f'  [GPU] TRT Model max batch size: {self.max_batch} (dynamic: {self.is_dynamic_batch})')
-                if self.max_batch > 1:
-                    dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * min(n_cams, self.max_batch)
-                    self.model.predict(dummy, device=self.device, verbose=False)
-            else:
-                for bs in sorted({1, min(n_cams, 4)}):
-                    dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * bs
-                    self.model.predict(dummy, device=self.device, verbose=False)
-                self.max_batch = 16
-                self.is_dynamic_batch = True
-            print(f'  [GPU] Warmup done')
+                    for bs in sorted({1, min(n_cams, 4)}):
+                        dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * bs
+                        self.model.predict(dummy, device=self.device, verbose=False)
+                        # Flush MPS command buffers between warmup steps; on CPU this is a no-op.
+                        try:
+                            if self.device == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                                torch.mps.synchronize()
+                        except Exception:
+                            pass
+                    self.max_batch = 16
+                    self.is_dynamic_batch = True
+            print(f'  [GPU] Warmup done (device={self.device})')
         except Exception as exc:
             print(f'Warmup error: {exc}')
 
@@ -374,7 +412,7 @@ class ConsolidatedBatchedAI:
             return results_map
 
         try:
-            with torch.no_grad():
+            with self._infer_lock, torch.no_grad():
                 # Batch chunking to avoid TRT max batch size limits
                 # TRT engines have a baked-in max batch size. Extract it if possible.
                 MAX_BATCH = getattr(self, 'max_batch', 1)
@@ -393,6 +431,14 @@ class ConsolidatedBatchedAI:
                         verbose=False,
                     )
                     yolo_results.extend(chunk_results)
+                # On MPS, wait for the command buffer to finish before the
+                # next predict() / background torch use. Prevents the
+                # AGXG17GFamilyCommandBuffer coalescing abort.
+                try:
+                    if self.device == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                        torch.mps.synchronize()
+                except Exception:
+                    pass
 
             for i, res in enumerate(yolo_results):
                 cam = cam_nodes[i]
