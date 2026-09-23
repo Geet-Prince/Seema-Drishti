@@ -430,7 +430,7 @@ class ConsolidatedBatchedAI:
             dev = getattr(self, "_device", "cpu")
             if getattr(self, '_using_trt', False):
                 # Init the predictor with a single frame
-                self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=dev, verbose=False)
+                self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=dev, verbose=False, workers=0)
                 backend = getattr(self.model.predictor, 'model', None)
                 if backend and hasattr(backend, 'bindings'):
                     shape = backend.bindings['images'].shape
@@ -442,11 +442,11 @@ class ConsolidatedBatchedAI:
                 print(f'  [AI] TRT Model max batch size: {self.max_batch} (dynamic: {self.is_dynamic_batch})')
                 if self.max_batch > 1:
                     dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * min(n_cams, self.max_batch)
-                    self.model.predict(dummy, device=dev, verbose=False)
+                    self.model.predict(dummy, device=dev, verbose=False, workers=0)
             else:
                 for bs in sorted({1, min(n_cams, 4)}):
                     dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * bs
-                    self.model.predict(dummy, device=dev, verbose=False)
+                    self.model.predict(dummy, device=dev, verbose=False, workers=0)
                 self.max_batch = 16
                 self.is_dynamic_batch = True
             print(f'  [AI] Warmup done on {dev}')
@@ -489,9 +489,11 @@ class ConsolidatedBatchedAI:
                         imgsz=416,
                         device=_dev,
                         verbose=False,
+                        workers=0,
                     )
                     # 'half' is CUDA-only — only pass it on CUDA to avoid errors on CPU/MPS.
-                    if _dev == 0 or _dev == "cuda" or _half:
+                    # 'half' is deprecated and spammy on MPS. Only use on real CUDA.
+                    if _dev == 0 or _dev == "cuda":
                         _kwargs["half"] = True
                     chunk_results = self.model.predict(**_kwargs)
                     yolo_results.extend(chunk_results)
