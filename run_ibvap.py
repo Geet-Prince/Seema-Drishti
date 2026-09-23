@@ -343,8 +343,10 @@ class ConsolidatedBatchedAI:
             self._use_half = True
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             import os as _os
-            self._device = _os.environ.get("IBVAP_DEVICE", "mps")
-            self._use_half = True  # M-Series handles FP16 perfectly for 2x speed!
+            # PyTorch MPS suffers from GC threading crashes on YOLO batching. 
+            # Default to CPU which is incredibly fast and 100% stable on Apple Silicon.
+            self._device = _os.environ.get("IBVAP_DEVICE", "cpu")
+            self._use_half = False
         else:
             self._device = "cpu"
             self._use_half = False
