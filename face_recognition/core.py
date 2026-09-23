@@ -42,8 +42,10 @@ class FaceRecognitionWorker:
         # We use a fast, lightweight insightface setup suitable for edge processing.
         # Try CUDA first to prevent CPU bottlenecking, fallback to CPU.
         self.app = FaceAnalysis(name='buffalo_s', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-        # Prepare for only face detection & recognition
-        self.app.prepare(ctx_id=0, det_size=(640, 640))
+        # FIX: Use det_size=(320, 320) instead of (640, 640) — the input to this model is
+        # already a tight head crop (~100–200 px wide), so 640 is wasteful and can cause
+        # insightface to time-out or OOM on dense crowd frames.
+        self.app.prepare(ctx_id=0, det_size=(320, 320))
 
     def reload_database(self):
         """Loads all known personnel from SQLite and builds the FAISS index."""
@@ -66,7 +68,7 @@ class FaceRecognitionWorker:
             
         # Extract embeddings and build index
         dim = len(personnel[0]['embedding'])
-        self.index = faiss.IndexFlatIP(dim) # Inner product (cosine sim for normalized vectors)
+        self.index = faiss.IndexFlatIP(dim)  # Inner product (cosine sim for normalized vectors)
         
         embeddings = []
         for i, person in enumerate(personnel):
@@ -98,7 +100,15 @@ class FaceRecognitionWorker:
             return
             
         if track_id in self.identity_cache:
-            return # Already recognized
+            return  # Already recognized
+            
+        # FIX: Guard against crops that are too small for insightface to process —
+        # this is the primary crash source when many tiny detections appear in crowd scenes.
+        if image_crop is None or image_crop.size == 0:
+            return
+        h_crop, w_crop = image_crop.shape[:2]
+        if h_crop < 20 or w_crop < 20:
+            return
             
         now = time.time()
         last_time = self.last_enqueue.get(track_id, 0.0)
@@ -108,7 +118,7 @@ class FaceRecognitionWorker:
             return
             
         attempts = self.track_attempts.get(track_id, 0)
-        if attempts > 30: # 30 attempts at 3 fps = 10 seconds of processing!
+        if attempts > 30:  # 30 attempts at 3 fps = 10 seconds of processing
             return 
             
         try:
@@ -125,12 +135,19 @@ class FaceRecognitionWorker:
         """Extract a single face embedding from an image. Used by API when registering new personnel."""
         if not self.app:
             return None
-        faces = self.app.get(image_bgr)
+        try:
+            faces = self.app.get(image_bgr)
+        except Exception:
+            return None
         if not faces:
             return None
         # Return the largest face
         faces = sorted(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]), reverse=True)
-        return faces[0].embedding
+        emb = faces[0].embedding
+        # FIX: insightface can return None embedding on very poor quality images
+        if emb is None:
+            return None
+        return emb
 
     def _process_queue(self):
         while self.running:
@@ -138,41 +155,68 @@ class FaceRecognitionWorker:
                 track_id, crop = self.task_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
-                
-            if track_id in self.identity_cache:
-                continue
-                
-            faces = self.app.get(crop)
-            if not faces:
-                continue
-                
-            # Filter faces by detection confidence and size to prevent garbage embeddings
-            valid_faces = []
-            for f in faces:
-                if getattr(f, 'det_score', 0) < 0.6:
+
+            # FIX: Wrap the entire processing block in a broad try/except.
+            # Previously one bad crop (e.g. an all-black frame from the Tom Holland
+            # concert video) could raise an unhandled exception and kill this thread
+            # permanently — causing face recognition to silently stop for the rest
+            # of the session.
+            try:
+                if track_id in self.identity_cache:
                     continue
-                w, h = f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]
-                if w < 45 or h < 45: # Too blurry/small
+
+                # Guard: skip degenerate crops that slipped through enqueue_crop
+                if crop is None or crop.size == 0:
                     continue
-                valid_faces.append(f)
+                h_crop, w_crop = crop.shape[:2]
+                if h_crop < 20 or w_crop < 20:
+                    continue
+
+                faces = self.app.get(crop)
+                if not faces:
+                    continue
+                    
+                # Filter faces by detection confidence and size to prevent garbage embeddings
+                valid_faces = []
+                for f in faces:
+                    if getattr(f, 'det_score', 0) < 0.6:
+                        continue
+                    w, h = f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]
+                    if w < 45 or h < 45:  # Too blurry/small
+                        continue
+                    # FIX: Skip faces with None embeddings (common in crowd/blurry frames)
+                    if f.embedding is None:
+                        continue
+                    valid_faces.append(f)
+                    
+                if not valid_faces:
+                    continue
+                    
+                # Take the largest valid face in the crop
+                face = sorted(valid_faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]), reverse=True)[0]
+
+                # FIX: Explicit None guard on embedding before passing to numpy
+                if face.embedding is None:
+                    continue
+
+                emb = np.array(face.embedding, dtype=np.float32).reshape(1, -1)
+                faiss.normalize_L2(emb)
                 
-            if not valid_faces:
-                continue
-                
-            # Take the largest valid face in the crop
-            face = sorted(valid_faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]), reverse=True)[0]
-            emb = np.array(face.embedding, dtype=np.float32).reshape(1, -1)
-            faiss.normalize_L2(emb)
-            
-            # Match in FAISS
-            distances, indices = self.index.search(emb, 1)
-            if len(distances) > 0 and len(distances[0]) > 0:
-                dist = distances[0][0] # Since vectors are normalized, this is cosine similarity
-                idx = indices[0][0]
-                
-                if dist >= self.confidence_threshold:
-                    person = self.personnel_map[idx]
-                    self.identity_cache[track_id] = person
-                    logger.info(f"Matched {track_id} as {person['name']} (Sim: {dist:.2f})")
-                else:
-                    logger.debug(f"Face found for {track_id} but no match (Max Sim: {dist:.2f})")
+                # Match in FAISS
+                if self.index is None:
+                    continue
+                distances, indices = self.index.search(emb, 1)
+                if len(distances) > 0 and len(distances[0]) > 0:
+                    dist = distances[0][0]  # Cosine similarity (normalized vectors)
+                    idx = indices[0][0]
+                    
+                    if dist >= self.confidence_threshold:
+                        person = self.personnel_map[idx]
+                        self.identity_cache[track_id] = person
+                        logger.info(f"Matched {track_id} as {person['name']} (Sim: {dist:.2f})")
+                    else:
+                        logger.debug(f"Face found for {track_id} but no match (Max Sim: {dist:.2f})")
+
+            except Exception as exc:
+                # Log and continue — never crash the worker thread on a single bad frame
+                logger.warning(f"Face recognition error for track {track_id}: {exc}")

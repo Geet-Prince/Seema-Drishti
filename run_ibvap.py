@@ -234,30 +234,50 @@ class ConsolidatedBatchedAI:
     ``predict()`` for pure detection (no tracking state to contaminate)."""
 
     def __init__(self):
-        print('  [GPU] Loading TensorRT engine (yolov8s.engine)...')
+        # ── Device detection: CUDA → MPS → CPU. Never hardcode device=0. ──
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            self._device = 0
+            self._use_half = True
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            import os as _os
+            self._device = _os.environ.get("IBVAP_DEVICE", "cpu")
+            self._use_half = False
+        else:
+            self._device = "cpu"
+            self._use_half = False
+        print(f"  [AI] Device: {self._device} | FP16: {self._use_half}")
 
         import os
         from pathlib import Path
         _default_engine = Path(__file__).resolve().parent / 'yolov8s.engine'
         _ENGINE = Path(os.environ.get('IBVAP_TRT_ENGINE', str(_default_engine)))
-        _FALLBACK = 'yolov8s.pt'
+        _FALLBACK = os.environ.get('IBVAP_YOLO_WEIGHTS', 'yolov8n.pt')
 
-        if _ENGINE.exists():
+        # TensorRT .engine only runs on NVIDIA CUDA — never load it on Mac/CPU.
+        if _ENGINE.exists() and torch.cuda.is_available() and torch.cuda.device_count() > 0:
             self.model = YOLO(str(_ENGINE))
             self._using_trt = True
-            print('  [GPU] TensorRT engine loaded — FP16, fused kernels active')
+            print('  [AI] TensorRT engine loaded — FP16, fused kernels active')
         else:
-            print(f'  [WARN] Engine not found at {_ENGINE}, falling back to {_FALLBACK}')
+            if _ENGINE.exists():
+                print('  [AI] Engine file present but no CUDA — skipping TRT, using PyTorch weights')
+            print(f'  [AI] Loading {_FALLBACK} on {self._device} ...')
             self.model = YOLO(_FALLBACK)
-            self.model.to('cuda')
-            self._using_trt = False
             try:
-                self.model.model = torch.compile(
-                    self.model.model, mode='reduce-overhead', fullgraph=False
-                )
-                print('  [GPU] torch.compile enabled (TRT not found)')
+                self.model.to(self._device)
             except Exception as _e:
-                print(f'  [WARN] torch.compile unavailable: {_e}')
+                print(f'  [WARN] model.to({self._device}) failed ({_e}); falling back to cpu')
+                self._device = "cpu"
+                self.model.to("cpu")
+            self._using_trt = False
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                try:
+                    self.model.model = torch.compile(
+                        self.model.model, mode='reduce-overhead', fullgraph=False
+                    )
+                    print('  [AI] torch.compile enabled')
+                except Exception as _e:
+                    print(f'  [WARN] torch.compile unavailable: {_e}')
 
         self._anpr = None
         if _ANPR_AVAILABLE:
@@ -304,9 +324,10 @@ class ConsolidatedBatchedAI:
 
     def warmup(self, n_cams: int = 1) -> None:
         try:
+            dev = getattr(self, "_device", "cpu")
             if getattr(self, '_using_trt', False):
                 # Init the predictor with a single frame
-                self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=0, verbose=False)
+                self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=dev, verbose=False)
                 backend = getattr(self.model.predictor, 'model', None)
                 if backend and hasattr(backend, 'bindings'):
                     shape = backend.bindings['images'].shape
@@ -315,17 +336,17 @@ class ConsolidatedBatchedAI:
                 else:
                     self.max_batch = 1
                     self.is_dynamic_batch = False
-                print(f'  [GPU] TRT Model max batch size: {self.max_batch} (dynamic: {self.is_dynamic_batch})')
+                print(f'  [AI] TRT Model max batch size: {self.max_batch} (dynamic: {self.is_dynamic_batch})')
                 if self.max_batch > 1:
                     dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * min(n_cams, self.max_batch)
-                    self.model.predict(dummy, device=0, verbose=False)
+                    self.model.predict(dummy, device=dev, verbose=False)
             else:
                 for bs in sorted({1, min(n_cams, 4)}):
                     dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * bs
-                    self.model.predict(dummy, device=0, verbose=False)
+                    self.model.predict(dummy, device=dev, verbose=False)
                 self.max_batch = 16
                 self.is_dynamic_batch = True
-            print(f'  [GPU] Warmup done')
+            print(f'  [AI] Warmup done on {dev}')
         except Exception as exc:
             print(f'Warmup error: {exc}')
 
@@ -354,17 +375,22 @@ class ConsolidatedBatchedAI:
                 if MAX_BATCH is None or MAX_BATCH < 1:
                     MAX_BATCH = 1
                 yolo_results = []
+                _dev = getattr(self, "_device", "cpu")
+                _half = getattr(self, "_use_half", False)
                 for b_idx in range(0, len(frames), MAX_BATCH):
                     chunk = frames[b_idx:b_idx+MAX_BATCH]
-                    chunk_results = self.model.predict(
+                    _kwargs = dict(
                         source=chunk,
                         classes=[0, 2, 3, 5, 7],
                         conf=0.25,
                         imgsz=640,
-                        device=0,
-                        
+                        device=_dev,
                         verbose=False,
                     )
+                    # 'half' is CUDA-only — only pass it on CUDA to avoid errors on CPU/MPS.
+                    if _dev == 0 or _dev == "cuda" or _half:
+                        _kwargs["half"] = True
+                    chunk_results = self.model.predict(**_kwargs)
                     yolo_results.extend(chunk_results)
 
             for i, res in enumerate(yolo_results):
@@ -592,6 +618,7 @@ def main():
     cell_w, cell_h = 480, 270
 
     global_frame_count = 0
+    ALARM_COOLDOWN: dict = {}  # key → last alarm datetime (throttle 1 s per track)
 
     try:
         while True:
@@ -711,7 +738,7 @@ def main():
                         activity = obj.attributes.get("activity")
                         if is_breach or activity:
                             key = f"{cam.id}_{obj.track_id}"
-                            if key not in ALARM_COOLDOWN or (ts - ALARM_COOLDOWN[key]) > 1.0:
+                            if key not in ALARM_COOLDOWN or (ts - ALARM_COOLDOWN[key]).total_seconds() > 1.0:
                                 ALARM_COOLDOWN[key] = ts
                                 try:
                                     alarm_queue.put_nowait((analyzed, frames[i].copy()))
