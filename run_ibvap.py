@@ -70,6 +70,8 @@ class KalmanTracker:
     """
 
     def __init__(self, iou_thresh: float = 0.25, max_lost: int = 20):
+        import threading
+        self._lock = threading.Lock()
         self.tracks: dict = {}   # tid -> {kf, emb, lost, bbox, cls, conf}
         self.next_id: int = 1
         self.iou_thresh = iou_thresh
@@ -139,88 +141,90 @@ class KalmanTracker:
         return np.where(union>0, inter/union, 0.0).astype(np.float32)
 
     def predict(self) -> dict:
-        """Advance Kalman filters one step. Returns {tid: xyxy_bbox}.
-        Call every render frame -- keeps boxes moving smoothly when YOLO
-        is skipped. Cost: pure NumPy matrix ops, negligible on CPU."""
-        predicted = {}
-        for tid, t in self.tracks.items():
-            state = t['kf'].predict()
-            predicted[tid] = self._z_to_xyxy(state)
-        return predicted
+        with self._lock:
+            """Advance Kalman filters one step. Returns {tid: xyxy_bbox}.
+            Call every render frame -- keeps boxes moving smoothly when YOLO
+            is skipped. Cost: pure NumPy matrix ops, negligible on CPU."""
+            predicted = {}
+            for tid, t in self.tracks.items():
+                state = t['kf'].predict()
+                predicted[tid] = self._z_to_xyxy(state)
+            return predicted
 
     def update(self, detections: list, frame=None) -> list:
-        """Match detections to tracks (IoU+appearance), correct Kalman."""
-        for v in self.tracks.values():
-            v['lost'] += 1
+        with self._lock:
+            """Match detections to tracks (IoU+appearance), correct Kalman."""
+            for v in self.tracks.values():
+                v['lost'] += 1
 
-        matched: dict = {}
-        unmatched = list(range(len(detections)))
+            matched: dict = {}
+            unmatched = list(range(len(detections)))
 
-        if self.tracks and detections:
-            tids   = list(self.tracks.keys())
-            t_bboxes = [self._z_to_xyxy(self.tracks[tid]['kf'].statePost.flatten()) for tid in tids]
-            d_bboxes = [det['bbox'] for det in detections]
+            if self.tracks and detections:
+                tids   = list(self.tracks.keys())
+                t_bboxes = [self._z_to_xyxy(self.tracks[tid]['kf'].statePost.flatten()) for tid in tids]
+                d_bboxes = [det['bbox'] for det in detections]
 
-            iou_mat = self._iou_matrix(t_bboxes, d_bboxes)
-            app_mat = np.zeros_like(iou_mat)
-            if frame is not None:
-                for ti, tid in enumerate(tids):
-                    t_emb = self.tracks[tid].get('emb')
-                    if t_emb is None:
-                        continue
-                    for di, det in enumerate(detections):
-                        d_emb = self._hsv_emb(frame, det['bbox'])
-                        if d_emb is not None:
-                            app_mat[ti, di] = float(np.dot(t_emb, d_emb))
+                iou_mat = self._iou_matrix(t_bboxes, d_bboxes)
+                app_mat = np.zeros_like(iou_mat)
+                if frame is not None:
+                    for ti, tid in enumerate(tids):
+                        t_emb = self.tracks[tid].get('emb')
+                        if t_emb is None:
+                            continue
+                        for di, det in enumerate(detections):
+                            d_emb = self._hsv_emb(frame, det['bbox'])
+                            if d_emb is not None:
+                                app_mat[ti, di] = float(np.dot(t_emb, d_emb))
 
-            cost_mat = 0.5 * iou_mat + 0.5 * app_mat
-            remaining = list(range(len(detections)))
-            for t_i in np.argsort(-cost_mat.max(axis=1)):
-                if not remaining:
-                    break
-                tid = tids[t_i]
-                best_di = max(remaining, key=lambda di: cost_mat[t_i, di])
-                if float(cost_mat[t_i, best_di]) >= self.iou_thresh:
-                    matched[best_di] = tid
-                    remaining.remove(best_di)
-                    z = self._xyxy_to_z(detections[best_di]['bbox'])
-                    self.tracks[tid]['kf'].correct(z)
-                    self.tracks[tid]['lost'] = 0
-                    self.tracks[tid]['bbox'] = detections[best_di]['bbox']
-                    if frame is not None:
-                        new_emb = self._hsv_emb(frame, detections[best_di]['bbox'])
-                        if new_emb is not None:
-                            old = self.tracks[tid].get('emb')
-                            if old is None:
-                                self.tracks[tid]['emb'] = new_emb
-                            else:
-                                merged = 0.7*old + 0.3*new_emb
-                                n = np.linalg.norm(merged)
-                                self.tracks[tid]['emb'] = merged/n if n > 0 else merged
-            unmatched = remaining
+                cost_mat = 0.5 * iou_mat + 0.5 * app_mat
+                remaining = list(range(len(detections)))
+                for t_i in np.argsort(-cost_mat.max(axis=1)):
+                    if not remaining:
+                        break
+                    tid = tids[t_i]
+                    best_di = max(remaining, key=lambda di: cost_mat[t_i, di])
+                    if float(cost_mat[t_i, best_di]) >= self.iou_thresh:
+                        matched[best_di] = tid
+                        remaining.remove(best_di)
+                        z = self._xyxy_to_z(detections[best_di]['bbox'])
+                        self.tracks[tid]['kf'].correct(z)
+                        self.tracks[tid]['lost'] = 0
+                        self.tracks[tid]['bbox'] = detections[best_di]['bbox']
+                        if frame is not None:
+                            new_emb = self._hsv_emb(frame, detections[best_di]['bbox'])
+                            if new_emb is not None:
+                                old = self.tracks[tid].get('emb')
+                                if old is None:
+                                    self.tracks[tid]['emb'] = new_emb
+                                else:
+                                    merged = 0.7*old + 0.3*new_emb
+                                    n = np.linalg.norm(merged)
+                                    self.tracks[tid]['emb'] = merged/n if n > 0 else merged
+                unmatched = remaining
 
-        for di in unmatched:
-            tid = self.next_id; self.next_id += 1
-            kf = self._make_kf()
-            z  = self._xyxy_to_z(detections[di]['bbox'])
-            kf.statePost[:4] = z
-            kf.statePost[4:] = 0.0
-            emb = self._hsv_emb(frame, detections[di]['bbox']) if frame is not None else None
-            self.tracks[tid] = {
-                'kf': kf, 'emb': emb, 'lost': 0,
-                'bbox': detections[di]['bbox'],
-                'cls':  detections[di].get('cls', 0),
-                'conf': detections[di].get('conf', 1.0),
-            }
-            matched[di] = tid
+            for di in unmatched:
+                tid = self.next_id; self.next_id += 1
+                kf = self._make_kf()
+                z  = self._xyxy_to_z(detections[di]['bbox'])
+                kf.statePost[:4] = z
+                kf.statePost[4:] = 0.0
+                emb = self._hsv_emb(frame, detections[di]['bbox']) if frame is not None else None
+                self.tracks[tid] = {
+                    'kf': kf, 'emb': emb, 'lost': 0,
+                    'bbox': detections[di]['bbox'],
+                    'cls':  detections[di].get('cls', 0),
+                    'conf': detections[di].get('conf', 1.0),
+                }
+                matched[di] = tid
 
-        dead = [t for t, v in self.tracks.items() if v['lost'] > self.max_lost]
-        for t in dead:
-            del self.tracks[t]
+            dead = [t for t, v in self.tracks.items() if v['lost'] > self.max_lost]
+            for t in dead:
+                del self.tracks[t]
 
-        for i, det in enumerate(detections):
-            det['track_id'] = matched.get(i, 0)
-        return detections
+            for i, det in enumerate(detections):
+                det['track_id'] = matched.get(i, 0)
+            return detections
 
 
 # â”€â”€ Threaded Video Capture â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
