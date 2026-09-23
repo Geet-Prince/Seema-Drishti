@@ -132,7 +132,7 @@ check("Vehicle ANPR — module importable and has process()", _vehicle)
 # ─── 12. API endpoints ──────────────────────────────────────────────────────
 def _api():
     from alarm_manager.src.api import app
-    routes = [r.path for r in app.routes]
+    routes = [r.path for r in app.routes if hasattr(r, "path")]
     assert "/stream/live" in routes
     assert "/api/events" in routes
     assert "/api/incidents" in routes

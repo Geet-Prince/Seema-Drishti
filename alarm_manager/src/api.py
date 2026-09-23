@@ -10,9 +10,9 @@ import sys
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -38,13 +38,18 @@ except Exception as e:
     print("==================================================")
 
 # Static: snapshots, incidents, website
-_STORAGE     = Path(__file__).resolve().parents[2] / "storage"
-_WEBSITE_DIR = Path(__file__).resolve().parents[2] / "website" / "dashboard" / "dist"
-_INCIDENTS   = _STORAGE / "incidents"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_STORAGE = _REPO_ROOT / "storage"
+_DASHBOARD_DIST = _REPO_ROOT / "website" / "dashboard" / "dist"
+_FALLBACK_WEBSITE = _REPO_ROOT / "website"
+_INCIDENTS = _STORAGE / "incidents"
 
 app.mount("/storage", StaticFiles(directory=str(_STORAGE)), name="storage")
-if _WEBSITE_DIR.exists():
-    app.mount("/ui", StaticFiles(directory=str(_WEBSITE_DIR), html=True), name="ui")
+
+if _DASHBOARD_DIST.exists() and (_DASHBOARD_DIST / "index.html").exists():
+    app.mount("/ui", StaticFiles(directory=str(_DASHBOARD_DIST), html=True), name="ui")
+elif _FALLBACK_WEBSITE.exists() and (_FALLBACK_WEBSITE / "index.html").exists():
+    app.mount("/ui", StaticFiles(directory=str(_FALLBACK_WEBSITE), html=True), name="ui")
 
 
 @app.on_event("startup")
@@ -52,8 +57,16 @@ async def _startup(): init_db()
 
 
 @app.get("/")
-async def root():
+async def root(request: Request):
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        return RedirectResponse(url="/ui")
     return {"status": "SEEMA DRISHTI v3 running", "dashboard": "/ui", "docs": "/docs"}
+
+
+@app.get("/dashboard")
+async def dashboard_redirect():
+    return RedirectResponse(url="/ui")
 
 
 # ── MJPEG Stream helpers ────────────────────────────────────────────────────

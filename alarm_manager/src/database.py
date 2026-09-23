@@ -246,6 +246,7 @@ def insert_known_personnel(name: str, badge_number: str, image_path: str, embedd
         return cur.lastrowid
 
 def get_all_known_personnel() -> list[dict]:
+    init_db()
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
     rconn.row_factory = sqlite3.Row
@@ -258,5 +259,7 @@ def get_all_known_personnel() -> list[dict]:
             del d['embedding_json']
             result.append(d)
         return result
+    except sqlite3.OperationalError:
+        return []
     finally:
         rconn.close()

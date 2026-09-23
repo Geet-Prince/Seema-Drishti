@@ -10,8 +10,21 @@ import json
 import argparse
 import time
 import threading
-import winsound
 import numpy as np
+import sys
+import os
+
+try:
+    import winsound
+    def play_beep():
+        winsound.Beep(1500, 400)
+except ImportError:
+    def play_beep():
+        if sys.platform == "darwin":
+            os.system("afplay /System/Library/Sounds/Ping.aiff &")
+        else:
+            sys.stdout.write('\a')
+            sys.stdout.flush()
 from datetime import datetime
 
 from ultralytics import YOLO
@@ -93,7 +106,7 @@ def _alarm_loop():
     alert_active = True
     end_time = time.time() + ALERT_DURATION
     while time.time() < end_time:
-        winsound.Beep(1500, 400)
+        play_beep()
         time.sleep(BEEP_GAP)
     alert_active = False
 

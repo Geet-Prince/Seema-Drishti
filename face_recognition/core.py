@@ -39,11 +39,26 @@ class FaceRecognitionWorker:
             self.reload_database()
             
     def _init_model(self):
-        # We use a fast, lightweight insightface setup suitable for edge processing.
-        # Try CUDA first to prevent CPU bottlenecking, fallback to CPU.
-        self.app = FaceAnalysis(name='buffalo_s', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-        # Prepare for only face detection & recognition
-        self.app.prepare(ctx_id=0, det_size=(640, 640))
+        # Dynamic provider & device detection (CUDA vs CoreML vs CPU)
+        providers = ['CPUExecutionProvider']
+        ctx_id = -1
+        try:
+            import torch
+            if torch.cuda.is_available():
+                providers.insert(0, 'CUDAExecutionProvider')
+                ctx_id = 0
+        except ImportError:
+            pass
+
+        try:
+            import onnxruntime
+            if 'CoreMLExecutionProvider' in onnxruntime.get_available_providers():
+                providers.insert(0, 'CoreMLExecutionProvider')
+        except ImportError:
+            pass
+
+        self.app = FaceAnalysis(name='buffalo_s', providers=providers)
+        self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))
 
     def reload_database(self):
         """Loads all known personnel from SQLite and builds the FAISS index."""

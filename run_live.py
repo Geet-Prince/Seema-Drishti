@@ -46,10 +46,20 @@ def main():
     print(f"Video source open: {source}. Press 'q' to stop.")
     frame_id = 0
 
+    import os
     try:
         import winsound
     except ImportError:
         winsound = None
+
+    def play_sound_alert():
+        if sys.platform == "darwin":
+            os.system("afplay /System/Library/Sounds/Ping.aiff &")
+        elif winsound:
+            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+        else:
+            sys.stdout.write('\a')
+            sys.stdout.flush()
 
     try:
         from face_recognition.core import FaceRecognitionWorker
@@ -127,12 +137,12 @@ def main():
                     
                 label = f"{base_label} [{activity.upper()}]" if activity else base_label
 
-                if activity and winsound:
+                if activity:
                     for act in activity.split(", "):
                         event_key = f"{obj.track_id}_{act}"
                         if event_key not in beeped_events:
                             beeped_events.add(event_key)
-                            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+                            play_sound_alert()
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(frame, label, (x1, y1 - 10),

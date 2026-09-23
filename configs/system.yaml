@@ -36,7 +36,7 @@ models:
     state: Experimental
     weights: "models/current/best.pt"
     confidence_threshold: 0.5
-    device: "cpu"   # change to "cuda:0" if GPU available
+    device: "mps"   # "cpu" | "cuda:0" | "mps"
 
   human_tracking:
     state: Experimental
@@ -46,7 +46,7 @@ models:
     state: Experimental
     weights: "models/current/best.pt"
     confidence_threshold: 0.5
-    device: "cpu"
+    device: "mps"
 
   anpr:
     state: Experimental

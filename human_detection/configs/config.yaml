@@ -7,7 +7,7 @@ model:
   pretrained_fallback: "yolov8n.pt"     # downloaded automatically if weights missing
   confidence_threshold: 0.50
   iou_threshold: 0.45
-  device: "cuda"                          # "cpu" | "cuda:0" | "mps"
+  device: "mps"                          # "cpu" | "cuda:0" | "mps"
   target_classes: [0]                    # COCO class 0 = person
 
 video:
