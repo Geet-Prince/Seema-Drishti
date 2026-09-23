@@ -105,7 +105,7 @@ class KalmanTracker:
 
     @staticmethod
     def _z_to_xyxy(state):
-        cx, cy, w, h = float(state[0]), float(state[1]), float(state[2]), float(state[3])
+        st = state.flatten(); cx, cy, w, h = float(st[0]), float(st[1]), float(st[2]), float(st[3])
         return (int(cx-w/2), int(cy-h/2), int(cx+w/2), int(cy+h/2))
 
     @staticmethod
@@ -158,7 +158,7 @@ class KalmanTracker:
 
         if self.tracks and detections:
             tids   = list(self.tracks.keys())
-            t_bboxes = [self._z_to_xyxy(self.tracks[tid]['kf'].statePost) for tid in tids]
+            t_bboxes = [self._z_to_xyxy(self.tracks[tid]['kf'].statePost.flatten()) for tid in tids]
             d_bboxes = [det['bbox'] for det in detections]
 
             iou_mat = self._iou_matrix(t_bboxes, d_bboxes)
