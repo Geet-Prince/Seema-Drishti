@@ -743,7 +743,7 @@ def main():
             (Path(__file__).resolve().parent.parent / "clips").resolve()),
     )
     parser.add_argument("--max-cams", type=int, default=16)
-    parser.add_argument("--multi-cam-ai", action="store_true", help="Enable AI processing on all cameras simultaneously")
+    parser.add_argument("--multi-cam-ai", action="store_true", default=True, help="Always run AI on all cameras")
     args = parser.parse_args()
 
     source_path = Path(args.source)

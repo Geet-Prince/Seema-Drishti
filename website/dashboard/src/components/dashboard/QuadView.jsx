@@ -4,7 +4,7 @@
  */
 import { useState, useEffect } from 'react';
 
-const REFRESH_INTERVAL_MS = 2500;
+const REFRESH_INTERVAL_MS = 1000;
 
 function CamTile({ cam, isActive, onClick }) {
   const [broken, setBroken] = useState(false);
@@ -67,7 +67,7 @@ function CamTile({ cam, isActive, onClick }) {
   );
 }
 
-export default function QuadView({ cameras = [], activeCameraId, onSelect }) {
+export default function QuadView({ cameras = [], activeCameraId, onSelect, forceOpen = false }) {
   const visible = cameras;
   const [isOpen, setIsOpen] = useState(false);
 
@@ -79,18 +79,20 @@ export default function QuadView({ cameras = [], activeCameraId, onSelect }) {
 
   return (
     <div className="flex w-full flex-col">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex w-full items-center justify-between border-b border-[rgba(0,240,255,0.14)] bg-[rgba(0,240,255,0.04)] px-3 py-2 transition-colors hover:bg-[rgba(0,240,255,0.09)]"
-      >
-        <span className="mono text-[11px] tracking-[0.15em] text-[#9db4cc]">
-          TGT: <span className="font-bold text-[#00f0ff]" style={{ textShadow: '0 0 8px rgba(0,240,255,0.7)' }}>{activeCam?.name || activeCam?.id || 'None'}</span>
-        </span>
-        <span className="mono text-[10px] text-[#00f0ff]/60">{isOpen ? '▲' : '▼'}</span>
-      </button>
+      {!forceOpen && (
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="flex w-full items-center justify-between border-b border-[rgba(0,240,255,0.14)] bg-[rgba(0,240,255,0.04)] px-3 py-2 transition-colors hover:bg-[rgba(0,240,255,0.09)]"
+        >
+          <span className="mono text-[11px] tracking-[0.15em] text-[#9db4cc]">
+            TGT: <span className="font-bold text-[#00f0ff]" style={{ textShadow: '0 0 8px rgba(0,240,255,0.7)' }}>{activeCam?.name || activeCam?.id || 'None'}</span>
+          </span>
+          <span className="mono text-[10px] text-[#00f0ff]/60">{isOpen ? '▲' : '▼'}</span>
+        </button>
+      )}
 
-      {isOpen && (
-        <div className="grid max-h-[400px] grid-cols-2 gap-1.5 overflow-y-auto bg-black/30 p-2">
+      {(isOpen || forceOpen) && (
+        <div className={`grid grid-cols-2 gap-1.5 overflow-y-auto bg-black/30 p-2 ${forceOpen ? "h-full" : "max-h-[400px]"}`}>
           {visible.map((cam) => (
             <CamTile key={cam.id} cam={cam} isActive={cam.id === activeCameraId}
               onClick={() => { onSelect?.(cam.id); setIsOpen(false); }} />
