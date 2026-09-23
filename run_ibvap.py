@@ -297,7 +297,9 @@ class ThreadedCamera:
                 if self.cap and self.cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0:
                     # It's a video file and we reached the end. 
                     # Pause playback until user switches camera away and back.
-                    self.video_ended = True
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    # Reset tracker to avoid teleportation artifacts
+                    self.tracker = KalmanTracker()
                 else:
                     self._decode_failures += 1
                     if self._decode_failures > 100:

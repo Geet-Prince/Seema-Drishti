@@ -57,7 +57,7 @@ class FaceRecognitionWorker:
     def _init_model(self):
         # We use a fast, lightweight insightface setup suitable for edge processing.
         # Try CUDA first to prevent CPU bottlenecking, fallback to CPU.
-        self.app = FaceAnalysis(name='buffalo_s', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+        self.app = FaceAnalysis(name='buffalo_l', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
         # FIX: Use det_size=(320, 320) instead of (640, 640) — the input to this model is
         # already a tight head crop (~100–200 px wide), so 640 is wasteful and can cause
         # insightface to time-out or OOM on dense crowd frames.
