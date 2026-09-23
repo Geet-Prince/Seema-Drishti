@@ -15,6 +15,9 @@ Changes from V7:
 # Setting this env-var BEFORE any import suppresses the abort safely.
 import os
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "4")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
+os.environ.setdefault("MKL_NUM_THREADS", "4")
 # ─────────────────────────────────────────────────────────────────────────────
 import sys
 import queue
