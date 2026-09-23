@@ -8,6 +8,7 @@ import CameraPanel from './CameraPanel';
 import MonitorPanel from './MonitorPanel';
 import DetailPanel from './DetailPanel';
 import PersonnelManager from './PersonnelManager';
+import WatchlistManager from './WatchlistManager';
 
 function loadLS(key, fallback) {
   try {
@@ -23,6 +24,7 @@ export default function DashboardLayout() {
   const { alerts, status: connStatus, push } = useLiveAlerts();
   
   const [showPersonnelModal, setShowPersonnelModal] = useState(false);
+  const [showWatchlistModal, setShowWatchlistModal] = useState(false);
 
   const [incidents, setIncidents] = useState(() => loadLS('seemadrishti.incidents', []));
   const [stats, setStats] = useState(() => loadLS('seemadrishti.stats', []));
@@ -136,10 +138,12 @@ export default function DashboardLayout() {
         .map((a) => {
           const [x1, y1, x2, y2] = a.bbox;
           const known = a.identity && a.identity !== 'Unknown' ? ` · ${a.identity}` : '';
+          const plate = a.plateNo ? ` · ${a.plateNo}` : '';
+          const wanted = a.watchlistHit ? ' · WANTED' : '';
           return {
             x: x1, y: y1, w: x2 - x1, h: y2 - y1,
-            label: `${a.dangerLabel || a.title}${known}`, confidence: a.confidence != null ? a.confidence / 100 : undefined,
-            severity: a.severity,
+            label: `${a.dangerLabel || a.title}${known}${plate}${wanted}`, confidence: a.confidence != null ? a.confidence / 100 : undefined,
+            severity: a.watchlistHit ? 'critical' : a.severity,
           };
         }),
     [alerts],
@@ -182,6 +186,7 @@ export default function DashboardLayout() {
   return (
     <div className="flex min-h-screen flex-col bg-ink">
       {showPersonnelModal && <PersonnelManager onClose={() => setShowPersonnelModal(false)} />}
+      {showWatchlistModal && <WatchlistManager onClose={() => setShowWatchlistModal(false)} />}
       
       {connStatus !== 'live' && (
         <div className={`h-0.5 shrink-0 ${connStatus === 'connecting' ? 'bg-ghost' : 'bg-sev-critical'}`} />
@@ -191,6 +196,7 @@ export default function DashboardLayout() {
         onSectorChange={setSector} 
         connectionStatus={connStatus} 
         onPersonnelClick={() => setShowPersonnelModal(true)} 
+        onWatchlistClick={() => setShowWatchlistModal(true)}
       />
 
       {connStatus !== 'live' && (

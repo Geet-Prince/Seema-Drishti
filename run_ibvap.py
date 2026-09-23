@@ -336,6 +336,12 @@ class ConsolidatedBatchedAI:
         # worker (easyocr/torch) runs concurrently with YOLO.
         import threading as _th
         self._infer_lock = _th.Lock()
+        # Number-plate watchlist (normalized plate -> row). Refreshed from
+        # SQLite every ~15s so newly added plates take effect live.
+        self._watchlist: set = set()
+        self._watchlist_meta: dict = {}
+        self._watchlist_checked_at: float = 0.0
+        self._refresh_watchlist(force=True)
         # Keep CPU thread usage bounded so background decode/render threads
         # don't starve inference (tune via IBVAP_TORCH_THREADS).
         try:
@@ -346,6 +352,38 @@ class ConsolidatedBatchedAI:
                 torch.set_num_interop_threads(1)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------ #
+    def _refresh_watchlist(self, force: bool = False) -> None:
+        """Reload the plate watchlist from SQLite (throttled to ~15s)."""
+        import time as _t
+        now = _t.time()
+        if not force and now - self._watchlist_checked_at < 15.0:
+            return
+        self._watchlist_checked_at = now
+        try:
+            from alarm_manager.src.database import get_watchlist_plates
+            rows = get_watchlist_plates()
+            self._watchlist = {r["plate"] for r in rows}
+            self._watchlist_meta = {r["plate"]: r for r in rows}
+        except Exception:
+            pass
+
+    def _check_watchlist(self, plate: str | None) -> dict | None:
+        """Return the watchlist row if a detected plate is wanted, else None."""
+        if not plate:
+            return None
+        self._refresh_watchlist()
+        if not self._watchlist:
+            return None
+        try:
+            from alarm_manager.src.database import normalize_plate
+            norm = normalize_plate(plate)
+        except Exception:
+            norm = "".join(c for c in (plate or "").upper() if c.isalnum())
+        if norm in self._watchlist:
+            return self._watchlist_meta.get(norm, {"plate": norm})
+        return None
 
     def _anpr_worker_loop(self):
         import hashlib, cv2
@@ -558,6 +596,38 @@ class ConsolidatedBatchedAI:
                                     self._anpr_queue.put_nowait((cam.id, v_track_key, crop))
                                 except Exception:
                                     pass
+
+                        # Number-plate watchlist check — flags wanted vehicles
+                        # for the critical "Watchlist Plate Detected" rule and
+                        # captures a driver-region crop for evidence.
+                        if v_attrs.get("plate_no"):
+                            wl_row = self._check_watchlist(v_attrs["plate_no"])
+                            if wl_row is not None:
+                                v_attrs["watchlist_match"] = True
+                                v_attrs["watchlist_owner"] = wl_row.get("owner", "")
+                                print(f"  [WATCHLIST] {cam.id} {v_track_key} plate {v_attrs['plate_no']} — wanted vehicle!")
+                                try:
+                                    import hashlib as _hl
+                                    from pathlib import Path as _P
+                                    _iid = _hl.md5(f"{cam.id}-{v_track_key}".encode()).hexdigest()[:12]
+                                    _idir = _P(__file__).resolve().parent / "storage" / "incidents" / cam.id / _iid
+                                    _idir.mkdir(parents=True, exist_ok=True)
+                                    if not next(_idir.glob("driver_*.jpg"), None):
+                                        import cv2 as _cv2
+                                        _fr = frames[i]
+                                        _fh, _fw = _fr.shape[:2]
+                                        _bw, _bh = x2 - x1, y2 - y1
+                                        _dx1 = max(0, x1 - int(_bw * 0.10))
+                                        _dx2 = min(_fw, x2 + int(_bw * 0.10))
+                                        _dy1 = max(0, y1 - int(_bh * 0.15))
+                                        _dy2 = min(_fh, y1 + int(_bh * 0.55))
+                                        if _dx2 - _dx1 >= 20 and _dy2 - _dy1 >= 20:
+                                            _crop = _fr[_dy1:_dy2, _dx1:_dx2]
+                                            if _crop.size > 0:
+                                                _cv2.imwrite(str(_idir / "driver_001.jpg"), _crop,
+                                                             [_cv2.IMWRITE_JPEG_QUALITY, 90])
+                                except Exception as _e:
+                                    print(f"  [WARN] driver capture failed: {_e}")
 
                         dr_v.objects.append(DetectedObject(
                             object_type="vehicle",
@@ -799,12 +869,15 @@ def main():
                     for obj in analyzed.objects:
                         is_breach = (obj.attributes.get("zone_state") == "inside")
                         activity = obj.attributes.get("activity")
-                        if is_breach or activity:
+                        is_wanted = bool(obj.attributes.get("watchlist_match"))
+                        if is_breach or activity or is_wanted:
                             key = f"{cam.id}_{obj.track_id}"
                             if key not in ALARM_COOLDOWN or (ts - ALARM_COOLDOWN[key]).total_seconds() > 1.0:
                                 ALARM_COOLDOWN[key] = ts
                                 if is_breach:
                                     print(f"  [BREACH] {cam.id} {obj.track_id} ({obj.object_type}) inside fence — alarming + snapshot")
+                                if is_wanted:
+                                    print(f"  [WATCHLIST-ALARM] {cam.id} {obj.track_id} plate {obj.attributes.get('plate_no')} — alarming + snapshot")
                                 try:
                                     alarm_queue.put_nowait((analyzed, frames[i].copy()))
                                 except queue.Full:
@@ -867,8 +940,12 @@ def main():
                         identity = obj.attributes.get("identity", "Unknown")
                         badge = obj.attributes.get("badge_number", "")
                         img_path = obj.attributes.get("image_path", "")
-                        
-                        if identity != "Unknown" and not activity and not is_breach:
+                        plate_no = obj.attributes.get("plate_no", "")
+                        is_wanted = bool(obj.attributes.get("watchlist_match"))
+
+                        if is_wanted:
+                            color = (0, 0, 255)  # RED — wanted vehicle
+                        elif identity != "Unknown" and not activity and not is_breach:
                             color = (0, 255, 0)
                         elif is_breach or activity:
                             color = (0, 0, 255) # RED
@@ -876,9 +953,13 @@ def main():
                             color = (255, 0, 0) if obj.object_type == "vehicle" else (0, 255, 0)
 
                         track_num = obj.track_id.split("-")[-1]
-                        
-                        if identity != "Unknown":
+
+                        if is_wanted and plate_no:
+                            base = f"WANTED [{plate_no}]"
+                        elif identity != "Unknown":
                             base = f"[{identity} | Badge: {badge}]" if badge else f"[{identity}]"
+                        elif plate_no:
+                            base = f"{obj.object_type.capitalize()} {track_num} [{plate_no}]"
                         else:
                             base = f"{obj.object_type.capitalize()} {track_num}"
 
@@ -930,6 +1011,8 @@ def main():
                         if "plate_no" in obj.attributes:
                             tags.append(
                                 f"[{obj.attributes['plate_no']}]")
+                        if is_wanted:
+                            tags.append("WANTED")
                         if activity:
                             tags.append(activity.upper())
                         if is_breach:

@@ -125,6 +125,14 @@ def init_db() -> None:
                 embedding_json TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS vehicle_watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plate TEXT NOT NULL UNIQUE,
+                owner TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                created_at TEXT
+            );
+
             -- Indexes for fast time-ordered and per-camera reads
             CREATE INDEX IF NOT EXISTS idx_activity_created
                 ON activity_log(created_at DESC);
@@ -261,5 +269,58 @@ def get_all_known_personnel() -> list[dict]:
         return result
     except sqlite3.OperationalError:
         return []
+    finally:
+        rconn.close()
+
+
+# ── Number-plate watchlist ────────────────────────────────────────────────
+import re as _re
+
+def normalize_plate(plate: str) -> str:
+    """Canonical plate form: uppercase alphanumeric only (spaces/dashes removed)."""
+    return _re.sub(r'[^A-Z0-9]', '', (plate or '').upper())
+
+
+def add_watchlist_plate(plate: str, owner: str = "", notes: str = "") -> dict:
+    """Insert (or update) a watchlist plate. Returns the stored row."""
+    norm = normalize_plate(plate)
+    if len(norm) < 4:
+        raise ValueError("Plate number too short (min 4 characters).")
+    init_db()
+    with _conn_lock:
+        conn = get_connection()
+        conn.execute(
+            """INSERT INTO vehicle_watchlist (plate, owner, notes, created_at)
+               VALUES (?,?,?,?)
+               ON CONFLICT(plate) DO UPDATE SET owner=excluded.owner, notes=excluded.notes""",
+            (norm, owner or "", notes or "", datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM vehicle_watchlist WHERE plate=?", (norm,)).fetchone()
+        return dict(row)
+
+
+def remove_watchlist_plate(plate: str) -> bool:
+    norm = normalize_plate(plate)
+    init_db()
+    with _conn_lock:
+        conn = get_connection()
+        cur = conn.execute("DELETE FROM vehicle_watchlist WHERE plate=?", (norm,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_watchlist_plates() -> list[dict]:
+    """Return all watchlist rows (plates already stored normalized)."""
+    init_db()
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    rconn.row_factory = sqlite3.Row
+    try:
+        try:
+            rows = rconn.execute("SELECT * FROM vehicle_watchlist ORDER BY created_at DESC").fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [dict(r) for r in rows]
     finally:
         rconn.close()

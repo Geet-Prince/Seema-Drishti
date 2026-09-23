@@ -156,6 +156,23 @@ class AlarmManager:
                 plate_file = f"plate_{plate_no}.jpg"
                 if plate_file not in meta["snapshots"]:
                     meta["snapshots"].append(plate_file)
+
+            # Driver crops saved directly by the pipeline (watchlist hits) land
+            # in the incident folder ahead of us — adopt them into metadata.
+            if obj.attributes.get("watchlist_match"):
+                try:
+                    from pathlib import Path as _P
+                    idir = _P(__file__).resolve().parents[2] / "storage" / "incidents" / result.camera_id / incident_id
+                    if idir.exists():
+                        for f in sorted(idir.glob("driver_*.jpg")):
+                            if f.name not in meta["snapshots"]:
+                                meta["snapshots"].append(f.name)
+                            if f.name not in meta.get("driver_snapshots", []):
+                                meta.setdefault("driver_snapshots", []).append(f.name)
+                        if meta.get("driver_snapshots"):
+                            self._dirty_meta.add(incident_id)
+                except Exception:
+                    pass
                     
             # Adaptive snapshot: only capture if enough time has passed
             snapshot_file = None
@@ -224,6 +241,7 @@ class AlarmManager:
                         "activities":     meta["activities_detected"],
                         "timestamp":      result.timestamp_utc.isoformat(),
                         "plate_no":       plate_no,
+                        "watchlist_hit":  bool(obj.attributes.get("watchlist_match")),
                     }
                     self._broadcast(alert)
 

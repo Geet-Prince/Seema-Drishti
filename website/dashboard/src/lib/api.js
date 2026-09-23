@@ -26,6 +26,7 @@ export function normalizeAlert(raw) {
   const identity = attrs.identity || raw.identity || 'Unknown';
   const badgeNumber = attrs.badge_number || raw.badge_number || '';
   const faceImage = attrs.image_path || raw.image_path || '';
+  const watchlistHit = Boolean(attrs.watchlist_match ?? raw.watchlist_hit ?? raw.watchlist_match ?? false);
 
   return {
     _id: incidentId,
@@ -49,6 +50,7 @@ export function normalizeAlert(raw) {
     identity,
     badgeNumber,
     faceImage,
+    watchlistHit,
     snapshotUrl: snapshotUrl(raw.camera_id || 'CAM_LIVE', incidentId, snapshot),
     humansDetected: Number(raw.humans_detected || parseAttrsNum(raw.attributes, 'humans_detected') || 0),
     zoneBreaches: raw.zone_breaches || [],
@@ -81,10 +83,14 @@ function confFromAttrs(attributes) {
 // Normalize a backend incident (persisted folder metadata) into a list item.
 export function normalizeIncident(raw) {
   const sevCode = severityFromLabel(raw.danger_label, null);
+  const driverFiles = (raw.driver_snapshots || []).filter(Boolean);
+  const allSnaps = (raw.snapshots || []).map((f) => snapshotUrl(raw.camera_id || 'CAM_LIVE', raw.incident_id, f));
+  const driverUrls = driverFiles.map((f) => snapshotUrl(raw.camera_id || 'CAM_LIVE', raw.incident_id, f));
+  const watchlistHits = raw.watchlist_hits || [];
   return {
     _id: raw.incident_id,
     kind: 'incident',
-    severity: sevCode,
+    severity: watchlistHits.length ? 'critical' : sevCode,
     dangerLabel: raw.danger_label || sevCode,
     dangerScore: Number(raw.danger_score || 0),
     title: formatTitle([raw.modules_triggered?.join(', '), 'Incident'].filter(Boolean).join(' — ') || 'Incident'),
@@ -105,7 +111,10 @@ export function normalizeIncident(raw) {
     weaponsDetected: raw.weapons_detected || 0,
     facesCaptured: raw.faces_captured || 0,
     snapshotCount: raw.snapshot_count || (raw.snapshots?.length) || 0,
-    snapshots: (raw.snapshots || []).map((f) => snapshotUrl(raw.camera_id || 'CAM_LIVE', raw.incident_id, f)),
+    snapshots: allSnaps,
+    driverSnapshots: driverUrls,
+    watchlistHits,
+    watchlistHit: watchlistHits.length > 0,
     zoneBreaches: raw.zone_breaches || [],
     activities: raw.activities_detected || [],
     modules: raw.modules_triggered || [],
@@ -164,6 +173,10 @@ export const api = {
   },
   async incident(id) {
     return getJson(`/api/incidents/${id}`);
+  },
+  async watchlist() {
+    const res = await getJson('/api/watchlist');
+    return res.data || [];
   },
   // Per-frame live telemetry from the camera pipeline (same source as the feed).
   // Returns { humans, frame_id, updated_at, live }. "live" is false when the

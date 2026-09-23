@@ -41,6 +41,15 @@ rules:
     severity: high
     capture_snapshot: true
 
+  - name: "Watchlist Plate Detected"
+    module: human_tracking
+    object_type: vehicle
+    attribute: watchlist_match
+    equals: true
+    score: 85
+    severity: critical
+    capture_snapshot: true
+
   - name: "Suspicious Activity"
     module: suspicious_activity
     score: 35

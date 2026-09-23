@@ -56,10 +56,11 @@ export function useLiveAlerts({ sector } = {}) {
           const alert = normalizeAlert(raw);
           push([alert]);
           
-          // Play alarm sound on fence breach / intrusion / high-severity alerts
+          // Play alarm sound on fence breach / intrusion / watchlist / high-severity alerts
           const title = (alert.title || '').toLowerCase();
           const sev = (alert.severity || '').toLowerCase();
           if (title.includes('fence breach') || title.includes('intrusion') ||
+              title.includes('watchlist') || alert.watchlistHit ||
               sev === 'high' || sev === 'critical') {
             try {
               const ctx = new (window.AudioContext || window.webkitAudioContext)();

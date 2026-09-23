@@ -37,6 +37,16 @@ except Exception as e:
     traceback.print_exc()
     print("==================================================")
 
+try:
+    from watchlist.router import router as watchlist_router
+    app.include_router(watchlist_router)
+except Exception as e:
+    import traceback
+    print("==================================================")
+    print(f"CRITICAL ERROR: Could not import watchlist router!")
+    traceback.print_exc()
+    print("==================================================")
+
 # Static: snapshots, incidents, website
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORAGE = _REPO_ROOT / "storage"

@@ -60,6 +60,8 @@ export async function downloadIncidentReport(item) {
   y += 6;
 
   // ── Key-value metadata (single-pass per row) ──────────────────────────────
+  const plates = item.plateNumbers?.length ? item.plateNumbers.join(', ') : (item.plateNo || '—');
+  const wanted = item.watchlistHits?.length ? item.watchlistHits.join(', ') : (item.watchlistHit ? (item.plateNo || 'MATCHED') : '—');
   const kvRows = [
     ['Incident ID', item._id || '—'],
     ['Severity', item.dangerLabel || item.severity || '—'],
@@ -68,6 +70,8 @@ export async function downloadIncidentReport(item) {
     ['Location', item.location || '—'],
     ['Camera', item.cameraName || item.cameraId || '—'],
     ['Module(s)', item.modules?.join(', ') || item.module || '—'],
+    ['Plate(s)', plates],
+    ['Watchlist Hit', wanted],
     ['Started', item.startedAt ? new Date(item.startedAt).toLocaleString() : '—'],
     ['Last Updated', item.timestamp ? new Date(item.timestamp).toLocaleString() : '—'],
     ['Track ID(s)', item.trackId || item._raw?.track_ids?.join(', ') || '—'],
@@ -147,19 +151,34 @@ export async function downloadIncidentReport(item) {
     }
   }
 
-  // ── Snapshot Image ─────────────────────────────────────────────────────────
-  if (item.snapshotUrl) {
+  // ── Evidence photos: car snapshot + driver capture(s) ────────────────────
+  // snapshots[0] is the vehicle crop; driverSnapshots hold the windshield crop.
+  const evidenceImgs = [];
+  if (item.snapshotUrl) evidenceImgs.push({ url: item.snapshotUrl, caption: 'Vehicle capture' });
+  (item.driverSnapshots || []).forEach((u, i) => {
+    if (!evidenceImgs.some((e) => e.url === u)) evidenceImgs.push({ url: u, caption: `Driver capture ${i + 1}` });
+  });
+  (item.snapshots || []).slice(0, 4).forEach((u, i) => {
+    if (!evidenceImgs.some((e) => e.url === u)) evidenceImgs.push({ url: u, caption: `Snapshot ${i + 1}` });
+  });
+  for (const ev of evidenceImgs.slice(0, 5)) {
     try {
-      const imgData = await fetchImageAsBase64(item.snapshotUrl);
+      const imgData = await fetchImageAsBase64(ev.url);
       if (imgData) {
         y += 5;
         const imgW = W - M * 2;
         const imgH = imgW * 9 / 16;
-        if (y + imgH > H - 20) {
+        if (y + imgH + 8 > H - 20) {
           doc.addPage();
           y = M;
         }
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.setTextColor(90, 107, 127);
+        doc.text(ev.caption.toUpperCase(), M, y);
+        y += 4;
         doc.addImage(imgData, 'JPEG', M, y, imgW, imgH);
+        y += imgH;
       }
     } catch (err) {
       console.warn('Could not embed snapshot', err);
