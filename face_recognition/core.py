@@ -16,6 +16,22 @@ except ImportError:
     _MODULE_AVAILABLE = False
     logger.warning("Face recognition modules (insightface, faiss) not found. Face matching will be disabled.")
 
+# ── Pipeline singleton ────────────────────────────────────────────────────────
+# run_ibvap.py registers the live pipeline worker here after startup.
+# face_recognition/router.py reads it so uploads always reload the SAME worker
+# that is running inside the video pipeline — not a separate dead copy.
+_pipeline_worker = None
+
+def set_pipeline_worker(worker: "FaceRecognitionWorker") -> None:
+    """Called once by run_ibvap.py after the live pipeline worker is created."""
+    global _pipeline_worker
+    _pipeline_worker = worker
+
+def get_pipeline_worker() -> "FaceRecognitionWorker | None":
+    """Returns the live pipeline worker, or None if not yet started."""
+    return _pipeline_worker
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 class FaceRecognitionWorker:
     def __init__(self, confidence_threshold=0.48):

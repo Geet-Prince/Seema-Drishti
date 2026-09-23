@@ -606,9 +606,13 @@ def main():
     threading.Thread(target=alarm_worker, daemon=True).start()
 
     try:
-        from face_recognition.core import FaceRecognitionWorker
+        from face_recognition.core import FaceRecognitionWorker, set_pipeline_worker
         face_worker = FaceRecognitionWorker()
         face_worker.start()
+        # Register as the global singleton so the API router can hot-reload
+        # this exact instance when new personnel are uploaded via the website.
+        set_pipeline_worker(face_worker)
+        print("  [FACE] Pipeline worker registered as singleton.")
     except Exception as e:
         print(f"Face recognition init failed: {e}")
         face_worker = None

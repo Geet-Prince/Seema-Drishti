@@ -136,6 +136,40 @@ def init_db() -> None:
                 ON events(camera_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_events_severity
                 ON events(severity, created_at DESC);
+
+            -- Mission Control event layer (MC-2, additive — legacy events table untouched)
+            CREATE TABLE IF NOT EXISTS intrusion_events (
+                event_id      TEXT PRIMARY KEY,
+                state         TEXT DEFAULT 'OPEN',
+                zone_ids      TEXT DEFAULT '[]',
+                camera_ids    TEXT DEFAULT '[]',
+                person_keys   TEXT DEFAULT '[]',
+                track_ids     TEXT DEFAULT '[]',
+                behaviours    TEXT DEFAULT '[]',
+                headcount     INTEGER DEFAULT 0,
+                score_max     INTEGER DEFAULT 0,
+                det_count     INTEGER DEFAULT 0,
+                opened_at     TEXT,
+                last_seen_at  TEXT,
+                acked_by      TEXT DEFAULT '',
+                assigned_unit TEXT DEFAULT '',
+                clip_path     TEXT DEFAULT '',
+                ledger_prev   TEXT DEFAULT '',
+                ledger_curr   TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS event_transitions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id    TEXT,
+                from_state  TEXT,
+                to_state    TEXT,
+                actor       TEXT,
+                reason      TEXT DEFAULT '',
+                created_at  TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_intrusion_state_seen
+                ON intrusion_events(state, last_seen_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_transitions_event
+                ON event_transitions(event_id, created_at DESC);
         """)
         conn.commit()
 
@@ -245,6 +279,15 @@ def insert_known_personnel(name: str, badge_number: str, image_path: str, embedd
         conn.commit()
         return cur.lastrowid
 
+def delete_known_personnel(person_id: int) -> bool:
+    """Delete a personnel record by id. Returns True if a row was deleted."""
+    with _conn_lock:
+        conn = get_connection()
+        cur = conn.execute("DELETE FROM known_personnel WHERE id=?", (person_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def get_all_known_personnel() -> list[dict]:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
@@ -258,5 +301,88 @@ def get_all_known_personnel() -> list[dict]:
             del d['embedding_json']
             result.append(d)
         return result
+    finally:
+        rconn.close()
+
+
+# ── Mission Control event helpers (MC-2/MC-4) ─────────────────────────────
+_VALID_TRANSITIONS = {
+    "OPEN": {"ESCALATING", "ACKED", "FALSE_ALARM", "RESOLVED"},
+    "ESCALATING": {"ACKED", "DISPATCHED", "FALSE_ALARM", "RESOLVED"},
+    "ACKED": {"DISPATCHED", "RESOLVED", "FALSE_ALARM"},
+    "DISPATCHED": {"RESOLVED", "FALSE_ALARM"},
+    "RESOLVED": set(), "CLOSED": set(), "FALSE_ALARM": set(),
+}
+
+def upsert_intrusion_event(ev: dict) -> None:
+    """Insert or update intrusion_events row from grouper Event.to_update() + sets."""
+    with _conn_lock:
+        conn = get_connection()
+        conn.execute(
+            """INSERT INTO intrusion_events
+               (event_id, state, zone_ids, camera_ids, person_keys, track_ids,
+                behaviours, headcount, score_max, det_count,
+                opened_at, last_seen_at, ledger_prev, ledger_curr)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(event_id) DO UPDATE SET
+                 state=excluded.state, zone_ids=excluded.zone_ids,
+                 camera_ids=excluded.camera_ids, person_keys=excluded.person_keys,
+                 track_ids=excluded.track_ids, behaviours=excluded.behaviours,
+                 headcount=excluded.headcount, score_max=excluded.score_max,
+                 det_count=excluded.det_count, last_seen_at=excluded.last_seen_at,
+                 ledger_prev=excluded.ledger_prev, ledger_curr=excluded.ledger_curr""",
+            (ev.get("event_id"), ev.get("state", "OPEN"),
+             json.dumps(ev.get("zones", []), separators=(",", ":")),
+             json.dumps(ev.get("cameras", []), separators=(",", ":")),
+             json.dumps(ev.get("person_keys", []), separators=(",", ":")),
+             json.dumps(ev.get("track_ids", []), separators=(",", ":")),
+             json.dumps(ev.get("behaviours", []), separators=(",", ":")),
+             ev.get("headcount", 0), ev.get("score_max", 0), ev.get("det_count", 0),
+             ev.get("opened_at"), ev.get("last_seen"),
+             ev.get("ledger_prev", ""), ev.get("ledger_curr", "")),
+        )
+        conn.commit()
+
+
+def transition_event(event_id: str, to_state: str, actor: str = "operator",
+                     reason: str = "") -> dict:
+    """Validate + apply state transition, audit-logged. Raises ValueError on illegal."""
+    to_state = (to_state or "").upper()
+    with _conn_lock:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT event_id, state FROM intrusion_events WHERE event_id=?", (event_id,)).fetchone()
+        if row is None:
+            # allow transitions for legacy incident ids: create minimal row first
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "INSERT INTO intrusion_events (event_id, state, opened_at, last_seen_at) VALUES (?,?,?,?)",
+                (event_id, "OPEN", now, now))
+            conn.commit()
+            from_state = "OPEN"
+        else:
+            from_state = row["state"]
+        allowed = _VALID_TRANSITIONS.get(from_state, set())
+        if to_state not in allowed:
+            raise ValueError(f"illegal transition {from_state}->{to_state}")
+        conn.execute("UPDATE intrusion_events SET state=? WHERE event_id=?", (to_state, event_id))
+        conn.execute(
+            "INSERT INTO event_transitions (event_id, from_state, to_state, actor, reason, created_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (event_id, from_state, to_state, actor, reason,
+             datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+        return {"event_id": event_id, "from": from_state, "to": to_state}
+
+
+def get_open_events(limit: int = 50) -> list[dict]:
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    rconn.row_factory = sqlite3.Row
+    try:
+        rows = rconn.execute(
+            "SELECT * FROM intrusion_events WHERE state IN ('OPEN','ESCALATING','ACKED','DISPATCHED')"
+            " ORDER BY last_seen_at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
     finally:
         rconn.close()
