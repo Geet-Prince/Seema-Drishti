@@ -30,8 +30,12 @@ class VirtualFence:
         self.contour = None
         self.load_config()
         self._inside_frames = {}
-        self._enter_threshold = 5  # Increased from 2 to require more sustained presence before alerting
-        self._grace_frames = 10
+        # Hysteresis: require 2 consecutive YOLO hits inside before firing.
+        # (YOLO runs every 2nd loop frame, so 2 hits ≈ 4 loop frames ≈ 0.15s.
+        # The old value of 5 meant fast walk-throughs never accumulated enough
+        # hits on the same track ID to trigger, so crossings were silently lost.)
+        self._enter_threshold = 2
+        self._grace_frames = 8
 
     def load_config(self):
         if self.roi_path and Path(self.roi_path).exists():

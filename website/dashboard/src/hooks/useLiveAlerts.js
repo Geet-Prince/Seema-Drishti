@@ -56,8 +56,11 @@ export function useLiveAlerts({ sector } = {}) {
           const alert = normalizeAlert(raw);
           push([alert]);
           
-          // Play alarm sound if it's a virtual fence breach
-          if (alert.title && (alert.title.toLowerCase().includes('fence breach') || alert.title.toLowerCase().includes('intrusion'))) {
+          // Play alarm sound on fence breach / intrusion / high-severity alerts
+          const title = (alert.title || '').toLowerCase();
+          const sev = (alert.severity || '').toLowerCase();
+          if (title.includes('fence breach') || title.includes('intrusion') ||
+              sev === 'high' || sev === 'critical') {
             try {
               const ctx = new (window.AudioContext || window.webkitAudioContext)();
               const osc = ctx.createOscillator();

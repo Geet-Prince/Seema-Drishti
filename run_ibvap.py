@@ -787,6 +787,8 @@ def main():
                             key = f"{cam.id}_{obj.track_id}"
                             if key not in ALARM_COOLDOWN or (ts - ALARM_COOLDOWN[key]).total_seconds() > 1.0:
                                 ALARM_COOLDOWN[key] = ts
+                                if is_breach:
+                                    print(f"  [BREACH] {cam.id} {obj.track_id} ({obj.object_type}) inside fence — alarming + snapshot")
                                 try:
                                     alarm_queue.put_nowait((analyzed, frames[i].copy()))
                                 except queue.Full:
