@@ -60,79 +60,166 @@ except Exception:
 
 
 # â”€â”€ Simple IOU Tracker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-class SimpleIOUTracker:
-    """Per-camera IOU-based tracker for assigning stable track IDs.
+class KalmanTracker:
+    """Per-camera tracker with Kalman filter + HSV appearance embeddings.
 
-    Replaces ByteTrack when multiple cameras are batched through a single
-    YOLO model, avoiding cross-camera track-ID contamination that occurs
-    when ``model.track(persist=True)`` receives frames from different sources.
+    1. Constant-velocity Kalman filter per track: smooth bbox interpolation
+       between YOLO frames so render runs at 30 FPS even when YOLO is at 8.
+    2. HSV histogram appearance (512-d, no extra model, <0.5 ms/det):
+       combined IoU + cosine cost prevents ID swaps when people cross paths.
     """
 
-    def __init__(self, iou_thresh: float = 0.25, max_lost: int = 15):
-        self.tracks: dict[int, dict] = {}   # tid â†’ {"bbox", "lost"}
+    def __init__(self, iou_thresh: float = 0.25, max_lost: int = 20):
+        self.tracks: dict = {}   # tid -> {kf, emb, lost, bbox, cls, conf}
         self.next_id: int = 1
         self.iou_thresh = iou_thresh
         self.max_lost = max_lost
 
-    # ------------------------------------------------------------------ #
-    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _make_kf():
+        """State=[cx,cy,w,h,vx,vy], observation=[cx,cy,w,h]."""
+        kf = cv2.KalmanFilter(6, 4)
+        kf.transitionMatrix = np.float32([
+            [1,0,0,0,1,0],
+            [0,1,0,0,0,1],
+            [0,0,1,0,0,0],
+            [0,0,0,1,0,0],
+            [0,0,0,0,1,0],
+            [0,0,0,0,0,1],
+        ])
+        kf.measurementMatrix = np.float32([
+            [1,0,0,0,0,0],
+            [0,1,0,0,0,0],
+            [0,0,1,0,0,0],
+            [0,0,0,1,0,0],
+        ])
+        kf.processNoiseCov     = np.eye(6, dtype=np.float32) * 1e-2
+        kf.measurementNoiseCov = np.eye(4, dtype=np.float32) * 1e-1
+        kf.errorCovPost        = np.eye(6, dtype=np.float32)
+        return kf
+
+    @staticmethod
+    def _xyxy_to_z(bbox):
+        x1, y1, x2, y2 = bbox
+        return np.float32([(x1+x2)/2, (y1+y2)/2, x2-x1, y2-y1]).reshape(4, 1)
+
+    @staticmethod
+    def _z_to_xyxy(state):
+        cx, cy, w, h = float(state[0]), float(state[1]), float(state[2]), float(state[3])
+        return (int(cx-w/2), int(cy-h/2), int(cx+w/2), int(cy+h/2))
+
+    @staticmethod
+    def _hsv_emb(frame, bbox):
+        """Fast 512-d HSV histogram embedding, L2-normalised."""
+        x1, y1, x2, y2 = (max(0, int(v)) for v in bbox)
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return None
+        crop = cv2.resize(crop, (32, 32), interpolation=cv2.INTER_AREA)
+        hsv  = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0,1,2], None, [8,8,8],
+                            [0,180, 0,256, 0,256]).flatten().astype(np.float32)
+        n = np.linalg.norm(hist)
+        return hist / n if n > 0 else hist
+
     @staticmethod
     def _iou_matrix(t_bboxes, d_bboxes):
-        """Vectorized IOU matrix."""
-        if len(t_bboxes) == 0 or len(d_bboxes) == 0:
+        if not t_bboxes or not d_bboxes:
             return np.zeros((len(t_bboxes), len(d_bboxes)), dtype=np.float32)
         t = np.asarray(t_bboxes, dtype=np.float32)
         d = np.asarray(d_bboxes, dtype=np.float32)
-        x1 = np.maximum(t[:, 0:1], d[None, :, 0])
-        y1 = np.maximum(t[:, 1:2], d[None, :, 1])
-        x2 = np.minimum(t[:, 2:3], d[None, :, 2])
-        y2 = np.minimum(t[:, 3:4], d[None, :, 3])
-        inter = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
-        area_t = ((t[:, 2] - t[:, 0]) * (t[:, 3] - t[:, 1]))[:, None]
-        area_d = ((d[:, 2] - d[:, 0]) * (d[:, 3] - d[:, 1]))[None, :]
-        union = area_t + area_d - inter
-        return np.where(union > 0, inter / union, 0.0).astype(np.float32)
+        x1 = np.maximum(t[:,0:1], d[None,:,0])
+        y1 = np.maximum(t[:,1:2], d[None,:,1])
+        x2 = np.minimum(t[:,2:3], d[None,:,2])
+        y2 = np.minimum(t[:,3:4], d[None,:,3])
+        inter = np.maximum(0, x2-x1) * np.maximum(0, y2-y1)
+        at = ((t[:,2]-t[:,0])*(t[:,3]-t[:,1]))[:,None]
+        ad = ((d[:,2]-d[:,0])*(d[:,3]-d[:,1]))[None,:]
+        union = at + ad - inter
+        return np.where(union>0, inter/union, 0.0).astype(np.float32)
 
-    # ------------------------------------------------------------------ #
-    def update(self, detections):
-        """Assign track_id to each detection dict.
-        Vectorized with NumPy; no per-pair Python IOU loops.
-        """
+    def predict(self) -> dict:
+        """Advance Kalman filters one step. Returns {tid: xyxy_bbox}.
+        Call every render frame -- keeps boxes moving smoothly when YOLO
+        is skipped. Cost: pure NumPy matrix ops, negligible on CPU."""
+        predicted = {}
+        for tid, t in self.tracks.items():
+            state = t['kf'].predict()
+            predicted[tid] = self._z_to_xyxy(state)
+        return predicted
+
+    def update(self, detections: list, frame=None) -> list:
+        """Match detections to tracks (IoU+appearance), correct Kalman."""
         for v in self.tracks.values():
-            v["lost"] += 1
+            v['lost'] += 1
 
-        matched = {}
+        matched: dict = {}
         unmatched = list(range(len(detections)))
 
         if self.tracks and detections:
-            tids = sorted(self.tracks.keys())
-            t_bboxes = [self.tracks[tid]["bbox"] for tid in tids]
-            d_bboxes = [det["bbox"] for det in detections]
-            iou_mat = self._iou_matrix(t_bboxes, d_bboxes)
+            tids   = list(self.tracks.keys())
+            t_bboxes = [self._z_to_xyxy(self.tracks[tid]['kf'].statePost) for tid in tids]
+            d_bboxes = [det['bbox'] for det in detections]
 
+            iou_mat = self._iou_matrix(t_bboxes, d_bboxes)
+            app_mat = np.zeros_like(iou_mat)
+            if frame is not None:
+                for ti, tid in enumerate(tids):
+                    t_emb = self.tracks[tid].get('emb')
+                    if t_emb is None:
+                        continue
+                    for di, det in enumerate(detections):
+                        d_emb = self._hsv_emb(frame, det['bbox'])
+                        if d_emb is not None:
+                            app_mat[ti, di] = float(np.dot(t_emb, d_emb))
+
+            cost_mat = 0.5 * iou_mat + 0.5 * app_mat
             remaining = list(range(len(detections)))
-            for t_i, tid in enumerate(tids):
+            for t_i in np.argsort(-cost_mat.max(axis=1)):
                 if not remaining:
                     break
-                best_di = max(remaining, key=lambda di: iou_mat[t_i, di])
-                if float(iou_mat[t_i, best_di]) >= self.iou_thresh:
+                tid = tids[t_i]
+                best_di = max(remaining, key=lambda di: cost_mat[t_i, di])
+                if float(cost_mat[t_i, best_di]) >= self.iou_thresh:
                     matched[best_di] = tid
                     remaining.remove(best_di)
-                    self.tracks[tid]["bbox"] = detections[best_di]["bbox"]
-                    self.tracks[tid]["lost"] = 0
+                    z = self._xyxy_to_z(detections[best_di]['bbox'])
+                    self.tracks[tid]['kf'].correct(z)
+                    self.tracks[tid]['lost'] = 0
+                    self.tracks[tid]['bbox'] = detections[best_di]['bbox']
+                    if frame is not None:
+                        new_emb = self._hsv_emb(frame, detections[best_di]['bbox'])
+                        if new_emb is not None:
+                            old = self.tracks[tid].get('emb')
+                            if old is None:
+                                self.tracks[tid]['emb'] = new_emb
+                            else:
+                                merged = 0.7*old + 0.3*new_emb
+                                n = np.linalg.norm(merged)
+                                self.tracks[tid]['emb'] = merged/n if n > 0 else merged
             unmatched = remaining
 
         for di in unmatched:
             tid = self.next_id; self.next_id += 1
+            kf = self._make_kf()
+            z  = self._xyxy_to_z(detections[di]['bbox'])
+            kf.statePost[:4] = z
+            kf.statePost[4:] = 0.0
+            emb = self._hsv_emb(frame, detections[di]['bbox']) if frame is not None else None
+            self.tracks[tid] = {
+                'kf': kf, 'emb': emb, 'lost': 0,
+                'bbox': detections[di]['bbox'],
+                'cls':  detections[di].get('cls', 0),
+                'conf': detections[di].get('conf', 1.0),
+            }
             matched[di] = tid
-            self.tracks[tid] = {"bbox": detections[di]["bbox"], "lost": 0}
 
-        dead = [t for t, v in self.tracks.items() if v["lost"] > self.max_lost]
+        dead = [t for t, v in self.tracks.items() if v['lost'] > self.max_lost]
         for t in dead:
             del self.tracks[t]
 
         for i, det in enumerate(detections):
-            det["track_id"] = matched.get(i, 0)
+            det['track_id'] = matched.get(i, 0)
         return detections
 
 
@@ -151,7 +238,7 @@ class ThreadedCamera:
         self.suspicious = SuspiciousActivityDetector()
         self.fence = VirtualFence(cam_id=cam_id, video_name=name,
                                   frame_w=w, frame_h=h)
-        self.tracker = SimpleIOUTracker()
+        self.tracker = KalmanTracker()
 
         self.latest_frame = np.zeros((h, w, 3), dtype=np.uint8)
         self.latest_frame_id = 0
@@ -390,7 +477,7 @@ class ConsolidatedBatchedAI:
                         source=chunk,
                         classes=[0, 2, 3, 5, 7],
                         conf=0.25,
-                        imgsz=640,
+                        imgsz=416,
                         device=_dev,
                         verbose=False,
                     )
@@ -416,7 +503,7 @@ class ConsolidatedBatchedAI:
                     ]
 
                 # ── Per-camera IOU tracking ─────────────────────────────
-                tracked = cam.tracker.update(raw_dets)
+                tracked = cam.tracker.update(raw_dets, frames[i])
 
                 # Cleanup dead tracks from camera memory
                 active_tids = set(cam.tracker.tracks.keys())
@@ -522,6 +609,91 @@ class ConsolidatedBatchedAI:
 
 
 # â”€â”€ Server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+# -- Async YOLO Detector -------------------------------------------------------
+class AsyncDetector:
+    """Runs YOLO inference in a background daemon thread.
+
+    The main render loop submits the latest frames each cycle (non-blocking)
+    and reads results without ever waiting on YOLO. This decouples inference
+    speed from render speed: YOLO runs at its natural throughput (8-15 FPS on
+    CPU for 10 cameras), while the render loop always hits 30 FPS.
+
+    Architecture:
+        submit()  -- called from main thread, stores latest frames, non-blocking
+        get_results() -- called from main thread, returns last published results
+        _loop()   -- background thread: pulls latest frames, runs YOLO, publishes
+    """
+
+    def __init__(self, batched_ai, target_yolo_fps: int = 10):
+        self._ai = batched_ai
+        self._min_interval = 1.0 / target_yolo_fps
+
+        self._lock = threading.Lock()
+        self._pending_frames: list = []
+        self._pending_cams:   list = []
+        self._pending_ts = None
+        self._has_pending = False
+
+        self._results: dict = {}     # cam_id -> (dr_humans, dr_vehicles)
+        self._result_seq: int = 0    # incremented on every new publish
+
+        self._event   = threading.Event()
+        self._running = True
+        self._thread  = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        print(f"  [ASYNC] YOLO thread started (target {target_yolo_fps} FPS)")
+
+    def submit(self, frames: list, cams: list, ts) -> None:
+        """Non-blocking. Always overwrites pending with the very latest frames."""
+        with self._lock:
+            self._pending_frames = frames
+            self._pending_cams   = cams
+            self._pending_ts     = ts
+            self._has_pending    = True
+        self._event.set()
+
+    def get_results(self) -> tuple:
+        """Non-blocking. Returns (results_dict, seq_int).
+        The seq number lets the main loop detect when new results have arrived."""
+        with self._lock:
+            return dict(self._results), self._result_seq
+
+    def _loop(self) -> None:
+        while self._running:
+            if not self._event.wait(timeout=0.05):
+                continue
+            self._event.clear()
+
+            with self._lock:
+                if not self._has_pending:
+                    continue
+                frames = list(self._pending_frames)
+                cams   = list(self._pending_cams)
+                ts     = self._pending_ts
+                self._has_pending = False
+
+            if not frames:
+                continue
+
+            t0 = time.time()
+            new_results = self._ai.process_batch(frames, cams, ts)
+
+            with self._lock:
+                self._results.update(new_results)
+                self._result_seq += 1
+
+            # Throttle to target FPS (avoids hammering CPU when YOLO is fast)
+            elapsed = time.time() - t0
+            sleep_t = self._min_interval - elapsed
+            if sleep_t > 0:
+                time.sleep(sleep_t)
+
+    def stop(self) -> None:
+        self._running = False
+        self._event.set()
+
+
 def start_server():
     from alarm_manager.src.api import app
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
@@ -619,6 +791,8 @@ def main():
 
     batched_ai = ConsolidatedBatchedAI()
     batched_ai.warmup(n_cams=len(cam_nodes))
+    async_detector = AsyncDetector(batched_ai, target_yolo_fps=10)
+    _last_seq = [-1]  # mutable cell — tracks last YOLO publish seq
 
     # Store cam_nodes reference so the API layer can access fences, etc.
     CAMERA_REGISTRY._cam_nodes = cam_nodes
@@ -669,31 +843,49 @@ def main():
             global_frame_count += 1
             ts = datetime.now(timezone.utc)
 
-            # Run YOLO every 2nd frame for accuracy/perf balance.
-            run_yolo = (global_frame_count % 2 == 0)
-
-            # â”€â”€ STAGE 2: BATCHED INFERENCE ON ALL CAMERAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # -- STAGE 2: Submit frames to async YOLO (non-blocking) -----
+            # The AsyncDetector runs inference in a background thread at
+            # target_yolo_fps (default 10). The render loop never waits.
             t_infer_start = time.time()
-            results_map: dict = {}
-            if run_yolo:
-                if args.multi_cam_ai:
-                    ai_frames = frames
-                    ai_cams = active_cams
-                else:
-                    ai_cam_id = CAMERA_REGISTRY.active_ai_cam
-                    ai_frames = []
-                    ai_cams = []
-                    for f, c in zip(frames, active_cams):
-                        if c.id == ai_cam_id:
-                            ai_frames.append(f)
-                            ai_cams.append(c)
-                            break
-                    if not ai_cams and active_cams:
-                        ai_frames = [frames[0]]
-                        ai_cams = [active_cams[0]]
-                
-                results_map = batched_ai.process_batch(ai_frames, ai_cams, ts)
+            if args.multi_cam_ai:
+                ai_frames, ai_cams = frames, active_cams
+            else:
+                ai_cam_id = CAMERA_REGISTRY.active_ai_cam
+                ai_frames, ai_cams = [], []
+                for f, c in zip(frames, active_cams):
+                    if c.id == ai_cam_id:
+                        ai_frames.append(f); ai_cams.append(c); break
+                if not ai_cams and active_cams:
+                    ai_frames = [frames[0]]; ai_cams = [active_cams[0]]
+            async_detector.submit(ai_frames, ai_cams, ts)
+
+            # Read latest YOLO results (may be from a previous cycle -- OK)
+            results_map, cur_seq = async_detector.get_results()
+            has_new_yolo = (cur_seq != _last_seq[0])
+            if has_new_yolo:
+                _last_seq[0] = cur_seq
             t_infer = time.time() - t_infer_start
+
+            # -- Kalman predict step: advance all track filters every frame -
+            # This keeps bboxes moving smoothly between YOLO inference frames.
+            for cam in active_cams:
+                predicted = cam.tracker.predict()
+                if cam.last_analyzed and not has_new_yolo:
+                    # Update bbox positions using Kalman prediction so the
+                    # render shows smooth motion even while YOLO is running.
+                    fr_h = frames[active_cams.index(cam)].shape[0] if frames else 9999
+                    fr_w = frames[active_cams.index(cam)].shape[1] if frames else 9999
+                    for obj in cam.last_analyzed.objects:
+                        if obj.object_type == "human":
+                            tid_str = obj.track_id.replace("det-", "")
+                            if tid_str.isdigit():
+                                tid = int(tid_str)
+                                if tid in predicted:
+                                    px1,py1,px2,py2 = predicted[tid]
+                                    obj.bbox = (
+                                        max(0, px1), max(0, py1),
+                                        min(fr_w, px2), min(fr_h, py2)
+                                    )
 
             # â”€â”€ STAGE 3: TRACKING + SUSPICIOUS + FENCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             t_track_start = time.time()
@@ -910,6 +1102,7 @@ def main():
                     g_idx = grid_cams.index(cam.id)
                     r, c = divmod(g_idx, cols)
                     if r < rows:
+                        
                         if hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
                             gpu_frame = cv2.cuda_GpuMat()
                             gpu_frame.upload(display)
