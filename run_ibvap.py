@@ -9,6 +9,13 @@ Changes from V7:
 4. ANPR Integration: Automatic plate reading on detected vehicles.
 5. Better error handling for bad/black video files.
 """
+# ── macOS OpenMP fix ─────────────────────────────────────────────────────────
+# PyTorch and insightface each bundle their own libomp.dylib. On macOS loading
+# both in the same process triggers "OMP Error #15" and aborts the program.
+# Setting this env-var BEFORE any import suppresses the abort safely.
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+# ─────────────────────────────────────────────────────────────────────────────
 import sys
 import queue
 import threading
