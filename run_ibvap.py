@@ -516,16 +516,18 @@ class ConsolidatedBatchedAI:
 
                 # Cleanup dead tracks from camera memory
                 active_tids = set(cam.tracker.tracks.keys())
-                for tid in list(cam.track_history.keys()):
-                    if tid not in active_tids:
-                        del cam.track_history[tid]
+                for t_key in list(cam.track_history.keys()):
+                    tid_str = t_key.split("-det-")[-1] if "-det-" in t_key else ""
+                    if tid_str.isdigit() and int(tid_str) not in active_tids:
+                        del cam.track_history[t_key]
                 for v_key in list(cam.vehicle_plates.keys()):
-                    tid_str = v_key.replace("veh-", "")
+                    tid_str = v_key.split("-veh-")[-1] if "-veh-" in v_key else ""
                     if tid_str.isdigit() and int(tid_str) not in active_tids:
                         del cam.vehicle_plates[v_key]
                 for v_key in list(cam.vehicle_plate_retries.keys()):
-                    tid_str = v_key.replace("veh-", "")
+                    tid_str = v_key.split("-veh-")[-1] if "-veh-" in v_key else ""
                     if tid_str.isdigit() and int(tid_str) not in active_tids:
+                        del cam.vehicle_plate_retries[v_key]
                         del cam.vehicle_plate_retries[v_key]
 
                 # ── Build DetectionResult objects ───────────────────────
@@ -549,7 +551,7 @@ class ConsolidatedBatchedAI:
 
                     if cls_id == 0:
                         # â”€â”€ Human â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-                        track_key = f"det-{tid}"
+                        track_key = f"{cam.id}-det-{tid}"
                         attrs: dict = {"centroid": (cx, cy)}
 
                         if track_key in cam.track_history:
@@ -886,7 +888,7 @@ def main():
                     fr_w = frames[active_cams.index(cam)].shape[1] if frames else 9999
                     for obj in cam.last_analyzed.objects:
                         if obj.object_type == "human":
-                            tid_str = obj.track_id.replace("det-", "")
+                            tid_str = obj.track_id.split("-det-")[-1] if "-det-" in obj.track_id else ""
                             if tid_str.isdigit():
                                 tid = int(tid_str)
                                 if tid in predicted:
