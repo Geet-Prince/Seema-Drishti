@@ -808,9 +808,9 @@ def main():
         print(f"Face recognition init failed: {e}")
         face_worker = None
 
-    batched_ai = ConsolidatedBatchedAI()
-    batched_ai.warmup(n_cams=len(cam_nodes))
-    # AsyncDetector removed for M-Series stability; running synchronously
+    # Re-enable async background threading (perfectly safe on CPU!)
+    async_detector = AsyncDetector(n_cams=len(cam_nodes), target_yolo_fps=15)
+    async_detector.start()
     _last_seq = [-1]  # mutable cell — tracks last YOLO publish seq
 
     # Store cam_nodes reference so the API layer can access fences, etc.
@@ -876,13 +876,13 @@ def main():
                         ai_frames.append(f); ai_cams.append(c); break
                 if not ai_cams and active_cams:
                     ai_frames = [frames[0]]; ai_cams = [active_cams[0]]
-            new_results = batched_ai.process_batch(ai_frames, ai_cams, ts)
+            async_detector.submit(ai_frames, ai_cams, ts)
 
             # Read latest YOLO results (may be from a previous cycle -- OK)
-            results_map = new_results
-            has_new_yolo = True
-            if False:
-                pass
+            results_map, cur_seq = async_detector.get_results()
+            has_new_yolo = (cur_seq != _last_seq[0])
+            if has_new_yolo:
+                _last_seq[0] = cur_seq
             t_infer = time.time() - t_infer_start
 
             # -- Kalman predict step: advance all track filters every frame -
@@ -1169,4 +1169,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
