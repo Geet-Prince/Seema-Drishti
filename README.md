@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>🛡️ IBVAP — Intelligent Border Video Analytics Platform</h1>
+<h1>🛡️ Seema Drishti — Intelligent Border Video Analytics Platform</h1>
 <h3><em>"Turning Commodity Border Cameras into Autonomous Guardians"</em></h3>
 
 <br/>
@@ -23,7 +23,7 @@
 
 ## 📑 Table of Contents
 
-1. [What is IBVAP?](#-what-is-ibvap)
+1. [What is Seema Drishti?](#-what-is-seema-drishti)
 2. [The Problem We Solve](#-the-problem-we-solve)
 3. [Our Solution at a Glance](#-our-solution-at-a-glance)
 4. [System Architecture & Data Flow](#-system-architecture--data-flow)
@@ -42,9 +42,9 @@
 
 ---
 
-## 🎯 What is IBVAP?
+## 🎯 What is Seema Drishti?
 
-**IBVAP (Intelligent Border Video Analytics Platform)** is an **edge-native, real-time multi-camera video intelligence system** engineered for the **Sashastra Seema Bal (SSB)** border outposts of India.
+**Seema Drishti (Intelligent Border Video Analytics Platform)** is an **edge-native, real-time multi-camera video intelligence system** engineered for the **Sashastra Seema Bal (SSB)** border outposts of India.
 
 It converts **existing legacy CCTV cameras and RTSP feeds** into an autonomous threat-detection mesh — no proprietary hardware, no cloud dependency, no operator required.
 
@@ -88,7 +88,7 @@ Border security forces (SSB, BSF, ITBP) guard thousands of kilometers of hostile
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                              IBVAP                                   │
+│                              Seema Drishti                                   │
 │        "Turning Commodity Border Cameras into Autonomous Guardians"  │
 ├─────────────────────────────────────────────────────────────────────┤
 │  ✓ 14+ Concurrent Cameras processed on 1 Edge GPU                  │
@@ -109,7 +109,7 @@ The entire pipeline executes inside a single process (`run_ibvap.py`), with ever
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                               IBVAP — Full Data Flow                                │
+│                               Seema Drishti — Full Data Flow                                │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 
   ┌─────────────────────────────────────────────────────┐
@@ -317,7 +317,7 @@ Built with **React 19 + Vite + Tailwind CSS v4 + Lucide Icons**.
 
 ## 📦 The Universal Data Contract
 
-Every single module in IBVAP communicates through **one and only one** shared data structure, defined in `contracts/schema.py`. This is **frozen** — no module can change it without full team sign-off.
+Every single module in Seema Drishti communicates through **one and only one** shared data structure, defined in `contracts/schema.py`. This is **frozen** — no module can change it without full team sign-off.
 
 ```python
 # contracts/schema.py
@@ -542,8 +542,8 @@ Tested on **NVIDIA RTX 3050 Laptop GPU (4GB VRAM)**:
 ### Step 1 — Clone the Repository
 
 ```bash
-git clone https://github.com/Geet-Prince/ibvap.git
-cd ibvap
+git clone https://github.com/Geet-Prince/Seema-Drishti.git
+cd Seema-Drishti
 ```
 
 ---
@@ -687,7 +687,7 @@ These tests verify all modules conform to the `DetectionResult` schema. They **m
 ## 📁 Project Structure
 
 ```
-ibvap/
+Seema-Drishti/
 │
 ├── run_ibvap.py              ← 🚀 SINGLE ENTRY POINT — run this to start everything
 ├── run_live.py               ← Alternative: detection-only (no multi-camera)
@@ -828,8 +828,8 @@ ibvap/
 | Solution | Cost per Border Outpost |
 |---|---|
 | Traditional Proprietary VMS (e.g., Milestone, Genetec) | ₹15,00,000 – ₹40,00,000 |
-| **IBVAP on COTS Edge GPU PC** | **₹80,000 – ₹1,50,000** |
-| **IBVAP on Existing SSB Hardware** | **₹0 (software only)** |
+| **Seema Drishti on COTS Edge GPU PC** | **₹80,000 – ₹1,50,000** |
+| **Seema Drishti on Existing SSB Hardware** | **₹0 (software only)** |
 
 > **90%+ cost reduction** with zero licensing fees — 100% open source stack.
 
@@ -877,7 +877,7 @@ ibvap/
 | **Abhilasha Jha** | Perimeter Security | Virtual Fence Intrusion Detection, ROI Calibration Tool |
 | **Prachi / Mayan** | Vehicle Intelligence | Vehicle Detection + Classification, ANPR Plate Reading |
 
-**GitHub:** [Geet-Prince/ibvap](https://github.com/Geet-Prince/ibvap)  
+**GitHub:** [Geet-Prince/Seema-Drishti](https://github.com/Geet-Prince/Seema-Drishti)  
 **Team Leader:** Omkar Mishra
 
 ---
