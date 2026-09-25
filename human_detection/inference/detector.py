@@ -101,9 +101,28 @@ class HumanDetector:
             # Save to the expected location so future runs are fast
             weights_path.parent.mkdir(parents=True, exist_ok=True)
             self._model.save(str(weights_path))
+            pt_file = str(weights_path)
         else:
             logger.info("Loading weights from %s", weights_path)
-            self._model = YOLO(str(weights_path))
+            pt_file = str(weights_path)
+
+        # macOS: prefer the Apple Neural Engine build of this exact .pt
+        # (FP32 export, same weights/post-processing — no accuracy change).
+        # Builds once on first run; falls back to PyTorch on any failure.
+        try:
+            import platform as _plat
+            if _plat.system() == "Darwin":
+                from configs.compute import ensure_coreml_model
+                cm = ensure_coreml_model(pt_file)
+                if cm != pt_file:
+                    logger.info("Loading CoreML model from %s", cm)
+                    self._model = YOLO(cm)
+                    return
+        except Exception as exc:
+            logger.warning("CoreML path unavailable (%s); using PyTorch.", exc)
+
+        if self._model is None:
+            self._model = YOLO(pt_file)
 
     def _run_inference(self, frame: np.ndarray) -> list[dict]:
         """
@@ -116,7 +135,17 @@ class HumanDetector:
         target_classes: list[int] = self._cfg["model"]["target_classes"]
         conf_thresh: float = self._cfg["model"]["confidence_threshold"]
         iou_thresh: float = self._cfg["model"]["iou_threshold"]
-        device: str = self._cfg["model"]["device"]
+        # Auto-switch compute backend (NVIDIA TensorRT/CUDA <-> Apple CPU).
+        # "auto" (or legacy unset) resolves via configs/compute.py; explicit
+        # "cpu"/"cuda:0"/"mps" values are honored. FP16 is enabled for real
+        # CUDA only — half=True on CPU/MPS is slower or errors out.
+        try:
+            from configs.compute import resolve_yolo_settings
+            yolo_cfg = resolve_yolo_settings(self._cfg["model"].get("device"))
+        except Exception:
+            yolo_cfg = {"device": self._cfg["model"].get("device") or "cpu",
+                        "half": False, "imgsz": 640}
+        device: str = yolo_cfg["device"]
 
         results = self._model.predict(
             source=frame,
@@ -124,8 +153,9 @@ class HumanDetector:
             conf=conf_thresh,
             iou=iou_thresh,
             device=device,
+            imgsz=yolo_cfg["imgsz"],
             verbose=False,
-            half=True,
+            half=yolo_cfg["half"],
         )
 
         detections = []

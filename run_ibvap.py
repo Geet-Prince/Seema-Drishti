@@ -2,7 +2,8 @@
 run_ibvap.py â€” IBVAP Single Entry Point (V8 Multi-Camera Architecture)
 =============================================================================
 Changes from V7:
-1. Multi-Camera AI: ALL cameras get YOLO detection, not just one.
+1. Multi-Camera AI: ALL cameras get YOLO detect
+ion, not just one.
 2. Per-Camera IOU Tracking: Simple IOU tracker per camera (no ByteTrack
    cross-camera contamination).
 3. Per-Camera Virtual Fence: Each camera loads its own fence polygon.
@@ -53,6 +54,64 @@ except Exception:
 
 
 # â”€â”€ Simple IOU Tracker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Render-path caches (hot-loop optimizations, zero inference impact) ──
+# Person thumbnails were re-read from disk + decoded + resized EVERY frame for
+# every recognized identity. Cache the 60px overlay once per image path.
+_THUMB_CACHE: dict = {}
+_THUMB_SIZE = 60
+
+
+def _get_person_thumb(local_path: str):
+    """Return a cached 60x60 BGR thumbnail, loading from disk only once."""
+    thumb = _THUMB_CACHE.get(local_path)
+    if thumb is None:
+        import cv2 as _cv2
+        import os as _os
+        if not local_path or not _os.path.exists(local_path):
+            return None
+        img = _cv2.imread(local_path)
+        if img is None:
+            return None
+        thumb = _cv2.resize(img, (_THUMB_SIZE, _THUMB_SIZE))
+        # Bound memory: thumbnails are ~10KB each; 200 entries is plenty.
+        if len(_THUMB_CACHE) >= 200:
+            _THUMB_CACHE.clear()
+        _THUMB_CACHE[local_path] = thumb
+    return thumb
+
+
+def _resolve_face_path(img_path: str):
+    """Resolve a /storage/... web path to a local file, cached per path."""
+    key = f"path:{img_path}"
+    if key in _THUMB_CACHE:
+        return _THUMB_CACHE[key]
+    local_path = img_path
+    if local_path and local_path.startswith('/storage'):
+        try:
+            from face_recognition.core import resolve_known_face_path
+            local_path = resolve_known_face_path(img_path) or img_path
+        except Exception:
+            import os
+            rel = img_path.split('/storage/')[-1]
+            for _base in (Path(__file__).resolve().parent,
+                          Path(__file__).resolve().parent.parent):
+                _cand = str(_base / "storage" / rel)
+                if os.path.exists(_cand):
+                    local_path = _cand
+                    break
+    _THUMB_CACHE[key] = local_path
+    return local_path
+
+
+# OpenCV-CUDA probe hoisted out of the per-cell hot loop: previously
+# cv2.cuda.getCudaEnabledDeviceCount() ran for every grid cell every frame.
+try:
+    import cv2 as _cv2_probe
+    _CV2_CUDA = hasattr(_cv2_probe, 'cuda') and _cv2_probe.cuda.getCudaEnabledDeviceCount() > 0
+except Exception:
+    _CV2_CUDA = False
+
+
 class SimpleIOUTracker:
     """Per-camera IOU-based tracker for assigning stable track IDs.
 
@@ -165,6 +224,9 @@ class ThreadedCamera:
     def _update(self):
         fps = 25.0
         frame_time = 1.0 / fps
+        # True when the source is a seekable video file (vs live webcam/RTSP).
+        # Video files loop forever; live sources use the decode-retry path.
+        self._is_file = False
 
         while self.running:
             if not self.is_active:
@@ -175,10 +237,6 @@ class ThreadedCamera:
                 time.sleep(0.5)
                 continue
 
-            if getattr(self, 'video_ended', False):
-                time.sleep(0.1)
-                continue
-
             if self.cap is None:
                 self.cap = cv2.VideoCapture(self.src_str)
                 if self.cap.isOpened():
@@ -186,6 +244,10 @@ class ThreadedCamera:
                     if fps <= 0 or fps > 60:
                         fps = 25.0
                     frame_time = 1.0 / fps
+                    try:
+                        self._is_file = float(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) > 0
+                    except Exception:
+                        self._is_file = False
                 else:
                     print(f"  [WARN] {self.id}: Failed to open {self.src_str}")
                     self._decode_failures += 1
@@ -196,21 +258,34 @@ class ThreadedCamera:
             ret, frame = self.cap.read() if self.cap else (False, None)
 
             if not ret:
-                if self.cap and self.cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0:
-                    # It's a video file and we reached the end. 
-                    # Pause playback until user switches camera away and back.
-                    self.video_ended = True
+                if getattr(self, '_is_file', False):
+                    # Video file reached the end — rewind and loop.
+                    try:
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = self.cap.read()
+                    except Exception:
+                        ret, frame = False, None
+                    if not ret:
+                        # Corrupt tail / can't seek — reopen and start over.
+                        try:
+                            self.cap.release()
+                        except Exception:
+                            pass
+                        self.cap = None
+                        self._decode_failures = 0
+                        continue
                 else:
                     self._decode_failures += 1
                     if self._decode_failures > 100:
                         print(f"  [WARN] {self.id}: Too many decode failures, "
-                              f"re-opening sourceâ€¦")
+                              f"re-opening source…")
                         if self.cap:
                             self.cap.release()
                             self.cap = None
                         self._decode_failures = 0
                         time.sleep(1.0)
-                continue
+                if not ret:
+                    continue
 
             # Good frame â€” reset failure counter.
             self._decode_failures = 0
@@ -228,36 +303,141 @@ class ThreadedCamera:
             self.cap.release()
 
 
+# Helper to get the best acceleration device for the host machine.
+# Delegates to configs/compute.py: NVIDIA -> CUDA/TensorRT, macOS -> CPU
+# (PyTorch MPS aborts sustained YOLO inference), else MPS/CPU.
+# Override with IBVAP_DEVICE=cpu|cuda|mps.
+def get_best_device():
+    try:
+        from configs.compute import detect_compute
+        return detect_compute()["device"]
+    except Exception:
+        pass
+    import os
+    import platform
+    forced = os.environ.get("IBVAP_DEVICE", "").strip().lower()
+    if forced in ("cpu", "cuda", "cuda:0", "mps"):
+        return "cuda:0" if forced == "cuda" else forced
+    if torch.cuda.is_available():
+        return "cuda:0"
+    if platform.system() == "Darwin":
+        return "cpu"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 # â”€â”€ Consolidated Batched AI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class ConsolidatedBatchedAI:
     """Runs a single YOLOv8 model on a batch of ALL camera frames using
     ``predict()`` for pure detection (no tracking state to contaminate)."""
 
     def __init__(self):
-        print('  [GPU] Loading TensorRT engine (yolov8s.engine)...')
-
         import os
+        import platform
         from pathlib import Path
-        _default_engine = Path(__file__).resolve().parent / 'yolov8s.engine'
-        _ENGINE = Path(os.environ.get('IBVAP_TRT_ENGINE', str(_default_engine)))
-        _FALLBACK = 'yolov8s.pt'
 
-        if _ENGINE.exists():
-            self.model = YOLO(str(_ENGINE))
-            self._using_trt = True
-            print('  [GPU] TensorRT engine loaded — FP16, fused kernels active')
-        else:
-            print(f'  [WARN] Engine not found at {_ENGINE}, falling back to {_FALLBACK}')
-            self.model = YOLO(_FALLBACK)
-            self.model.to('cuda')
-            self._using_trt = False
+        try:
+            from configs.compute import (
+                detect_compute, ensure_trt_engine,
+                apply_torch_thread_limits,
+            )
+            _compute = detect_compute()
+        except Exception:
+            _compute = {"device": get_best_device(), "use_half": False,
+                        "use_trt": False, "gpu_name": "",
+                        "note": "compute probe unavailable"}
+            def ensure_trt_engine(pt, eng=None, imgsz=640):  # type: ignore
+                return pt
+            def apply_torch_thread_limits():  # type: ignore
+                pass
+        print(f"  [COMPUTE] {_compute.get('note', '')}")
+        if _compute.get("gpu_name") and not _compute.get("use_trt"):
+            print(f"  [COMPUTE] GPU present but unused: {_compute['note']}")
+
+        try:
+            self.imgsz = int(os.environ.get("IBVAP_IMGSZ", "640"))
+        except ValueError:
+            self.imgsz = 640
+        if self.imgsz not in (320, 416, 480, 640, 800, 960, 1280):
+            self.imgsz = 640
+
+        _default_engine = Path(__file__).resolve().parent / 'yolov8s.engine'
+        _coreml_model = Path(__file__).resolve().parent / 'yolov8s.mlpackage'
+        _ENGINE = Path(os.environ.get('IBVAP_TRT_ENGINE', str(_default_engine)))
+        _COREML = Path(os.environ.get('IBVAP_COREML_MODEL', str(_coreml_model)))
+        _FALLBACK = str(Path(__file__).resolve().parent / 'yolov8s.pt')
+
+        self._using_trt = False
+        self._using_coreml = False
+        if platform.system() == "Darwin":
+            # Apple Neural Engine path: reuse a .mlpackage built from this
+            # exact .pt, else build it once (FP32, same weights — no accuracy
+            # change). Falls back to PyTorch CPU, never crashes.
             try:
-                self.model.model = torch.compile(
-                    self.model.model, mode='reduce-overhead', fullgraph=False
-                )
-                print('  [GPU] torch.compile enabled (TRT not found)')
-            except Exception as _e:
-                print(f'  [WARN] torch.compile unavailable: {_e}')
+                from configs.compute import ensure_coreml_model
+                weights = ensure_coreml_model(_FALLBACK, str(_COREML),
+                                              imgsz=self.imgsz)
+            except Exception as exc:
+                print(f'  [WARN] CoreML probe failed ({exc}); using {_FALLBACK}')
+                weights = _FALLBACK
+            if weights != _FALLBACK:
+                print(f'  [NPU] CoreML model found ({Path(weights).name}). Loading Apple Neural Engine format...')
+            try:
+                self.model = YOLO(str(weights))
+                self._using_coreml = str(weights).endswith(".mlpackage")
+                if self._using_coreml:
+                    print('  [NPU] CoreML model loaded — Apple Neural Engine / GPU acceleration active')
+            except Exception as exc:
+                print(f'  [WARN] Failed to load {weights} ({exc}); falling back to {_FALLBACK}')
+                self.model = YOLO(_FALLBACK)
+            self.device = "cpu"
+        else:
+            # TensorRT path (NVIDIA only): reuse a compatible .engine, else
+            # try a one-time export from .pt (GPU-specific build), else .pt.
+            # A foreign .engine raises on load — always fall back, never crash.
+            weights = _FALLBACK
+            if _compute.get("use_trt"):
+                if not _ENGINE.exists():
+                    print('  [GPU] No TensorRT engine found — building one from '
+                          f'{Path(_FALLBACK).name} (one-time, ~1-3 min)...')
+                weights = ensure_trt_engine(_FALLBACK, str(_ENGINE),
+                                            imgsz=self.imgsz)
+            elif _ENGINE.exists():
+                print(f'  [INFO] TensorRT engine present but unusable here '
+                      f'({_compute.get("note", "no CUDA")}). Using '
+                      f'{Path(_FALLBACK).name} on {_compute.get("device", "cpu")}.')
+            else:
+                print(f'  [WARN] Engine not found at {_ENGINE}, falling back to {_FALLBACK}')
+            try:
+                print(f'  [AI] Loading {Path(weights).name}...')
+                self.model = YOLO(str(weights))
+                self._using_trt = str(weights).endswith(".engine")
+                if self._using_trt:
+                    print('  [GPU] TensorRT engine loaded — FP16, fused kernels active')
+            except Exception as exc:
+                print(f'  [WARN] Failed to load {weights} ({exc}); falling back to {_FALLBACK}')
+                self.model = YOLO(_FALLBACK)
+                self._using_trt = False
+            if self._using_trt:
+                self.device = 0
+            else:
+                self.device = _compute.get("device", get_best_device())
+                try:
+                    self.model.to(self.device)
+                except Exception as exc:
+                    print(f'  [WARN] model.to({self.device}) failed ({exc}); using CPU')
+                    self.device = "cpu"
+                print(f'  [AI] Model loaded on device: {self.device} (imgsz={self.imgsz})')
+                if _compute.get("use_trt") or (
+                        str(self.device).startswith("cuda") and torch.cuda.is_available()):
+                    try:
+                        self.model.model = torch.compile(
+                            self.model.model, mode='reduce-overhead', fullgraph=False
+                        )
+                        print('  [GPU] torch.compile enabled (extra kernel fusion)')
+                    except Exception as _e:
+                        print(f'  [WARN] torch.compile unavailable: {_e}')
 
         self._anpr = None
         if _ANPR_AVAILABLE:
@@ -272,6 +452,57 @@ class ConsolidatedBatchedAI:
                 self._anpr_thread.start()
             except Exception as exc:
                 print(f'  [WARN] ANPR init failed: {exc}')
+
+        # Serialise all torch inference through one lock. PyTorch MPS is not
+        # thread-safe; even on CUDA/CPU this avoids surprises when the ANPR
+        # worker (easyocr/torch) runs concurrently with YOLO.
+        import threading as _th
+        self._infer_lock = _th.Lock()
+        # Number-plate watchlist (normalized plate -> row). Refreshed from
+        # SQLite every ~15s so newly added plates take effect live.
+        self._watchlist: set = set()
+        self._watchlist_meta: dict = {}
+        self._watchlist_checked_at: float = 0.0
+        self._refresh_watchlist(force=True)
+        # Keep CPU thread usage bounded so background decode/render threads
+        # don't starve inference (tune via IBVAP_TORCH_THREADS). Same bounds
+        # suit M5 efficiency cores and NVIDIA hosts.
+        try:
+            apply_torch_thread_limits()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    def _refresh_watchlist(self, force: bool = False) -> None:
+        """Reload the plate watchlist from SQLite (throttled to ~15s)."""
+        import time as _t
+        now = _t.time()
+        if not force and now - self._watchlist_checked_at < 15.0:
+            return
+        self._watchlist_checked_at = now
+        try:
+            from alarm_manager.src.database import get_watchlist_plates
+            rows = get_watchlist_plates()
+            self._watchlist = {r["plate"] for r in rows}
+            self._watchlist_meta = {r["plate"]: r for r in rows}
+        except Exception:
+            pass
+
+    def _check_watchlist(self, plate: str | None) -> dict | None:
+        """Return the watchlist row if a detected plate is wanted, else None."""
+        if not plate:
+            return None
+        self._refresh_watchlist()
+        if not self._watchlist:
+            return None
+        try:
+            from alarm_manager.src.database import normalize_plate
+            norm = normalize_plate(plate)
+        except Exception:
+            norm = "".join(c for c in (plate or "").upper() if c.isalnum())
+        if norm in self._watchlist:
+            return self._watchlist_meta.get(norm, {"plate": norm})
+        return None
 
     def _anpr_worker_loop(self):
         import hashlib, cv2
@@ -304,28 +535,35 @@ class ConsolidatedBatchedAI:
 
     def warmup(self, n_cams: int = 1) -> None:
         try:
-            if getattr(self, '_using_trt', False):
-                # Init the predictor with a single frame
-                self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=0, verbose=False)
-                backend = getattr(self.model.predictor, 'model', None)
-                if backend and hasattr(backend, 'bindings'):
-                    shape = backend.bindings['images'].shape
-                    self.max_batch = int(shape[0]) if shape[0] > 0 else 1
-                    self.is_dynamic_batch = getattr(backend, 'dynamic', False)
+            with self._infer_lock:
+                if getattr(self, '_using_trt', False):
+                    # Init the predictor with a single frame
+                    self.model.predict([np.zeros((640, 640, 3), dtype=np.uint8)], device=self.device, verbose=False)
+                    backend = getattr(self.model.predictor, 'model', None)
+                    if backend and hasattr(backend, 'bindings'):
+                        shape = backend.bindings['images'].shape
+                        self.max_batch = int(shape[0]) if shape[0] > 0 else 1
+                        self.is_dynamic_batch = getattr(backend, 'dynamic', False)
+                    else:
+                        self.max_batch = 1
+                        self.is_dynamic_batch = False
+                    print(f'  [GPU] TRT Model max batch size: {self.max_batch} (dynamic: {self.is_dynamic_batch})')
+                    if self.max_batch > 1:
+                        dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * min(n_cams, self.max_batch)
+                        self.model.predict(dummy, device=self.device, verbose=False)
                 else:
-                    self.max_batch = 1
-                    self.is_dynamic_batch = False
-                print(f'  [GPU] TRT Model max batch size: {self.max_batch} (dynamic: {self.is_dynamic_batch})')
-                if self.max_batch > 1:
-                    dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * min(n_cams, self.max_batch)
-                    self.model.predict(dummy, device=0, verbose=False)
-            else:
-                for bs in sorted({1, min(n_cams, 4)}):
-                    dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * bs
-                    self.model.predict(dummy, device=0, verbose=False)
-                self.max_batch = 16
-                self.is_dynamic_batch = True
-            print(f'  [GPU] Warmup done')
+                    for bs in sorted({1, min(n_cams, 4)}):
+                        dummy = [np.zeros((640, 640, 3), dtype=np.uint8)] * bs
+                        self.model.predict(dummy, device=self.device, verbose=False)
+                        # Flush MPS command buffers between warmup steps; on CPU this is a no-op.
+                        try:
+                            if self.device == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                                torch.mps.synchronize()
+                        except Exception:
+                            pass
+                    self.max_batch = 16
+                    self.is_dynamic_batch = True
+            print(f'  [GPU] Warmup done (device={self.device})')
         except Exception as exc:
             print(f'Warmup error: {exc}')
 
@@ -347,7 +585,7 @@ class ConsolidatedBatchedAI:
             return results_map
 
         try:
-            with torch.no_grad():
+            with self._infer_lock, torch.no_grad():
                 # Batch chunking to avoid TRT max batch size limits
                 # TRT engines have a baked-in max batch size. Extract it if possible.
                 MAX_BATCH = getattr(self, 'max_batch', 1)
@@ -360,12 +598,20 @@ class ConsolidatedBatchedAI:
                         source=chunk,
                         classes=[0, 2, 3, 5, 7],
                         conf=0.25,
-                        imgsz=640,
-                        device=0,
-                        
+                        imgsz=getattr(self, 'imgsz', 640),
+                        device=self.device,
+
                         verbose=False,
                     )
                     yolo_results.extend(chunk_results)
+                # On MPS, wait for the command buffer to finish before the
+                # next predict() / background torch use. Prevents the
+                # AGXG17GFamilyCommandBuffer coalescing abort.
+                try:
+                    if self.device == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                        torch.mps.synchronize()
+                except Exception:
+                    pass
 
             for i, res in enumerate(yolo_results):
                 cam = cam_nodes[i]
@@ -469,6 +715,38 @@ class ConsolidatedBatchedAI:
                                     self._anpr_queue.put_nowait((cam.id, v_track_key, crop))
                                 except Exception:
                                     pass
+
+                        # Number-plate watchlist check — flags wanted vehicles
+                        # for the critical "Watchlist Plate Detected" rule and
+                        # captures a driver-region crop for evidence.
+                        if v_attrs.get("plate_no"):
+                            wl_row = self._check_watchlist(v_attrs["plate_no"])
+                            if wl_row is not None:
+                                v_attrs["watchlist_match"] = True
+                                v_attrs["watchlist_owner"] = wl_row.get("owner", "")
+                                print(f"  [WATCHLIST] {cam.id} {v_track_key} plate {v_attrs['plate_no']} — wanted vehicle!")
+                                try:
+                                    import hashlib as _hl
+                                    from pathlib import Path as _P
+                                    _iid = _hl.md5(f"{cam.id}-{v_track_key}".encode()).hexdigest()[:12]
+                                    _idir = _P(__file__).resolve().parent / "storage" / "incidents" / cam.id / _iid
+                                    _idir.mkdir(parents=True, exist_ok=True)
+                                    if not next(_idir.glob("driver_*.jpg"), None):
+                                        import cv2 as _cv2
+                                        _fr = frames[i]
+                                        _fh, _fw = _fr.shape[:2]
+                                        _bw, _bh = x2 - x1, y2 - y1
+                                        _dx1 = max(0, x1 - int(_bw * 0.10))
+                                        _dx2 = min(_fw, x2 + int(_bw * 0.10))
+                                        _dy1 = max(0, y1 - int(_bh * 0.15))
+                                        _dy2 = min(_fh, y1 + int(_bh * 0.55))
+                                        if _dx2 - _dx1 >= 20 and _dy2 - _dy1 >= 20:
+                                            _crop = _fr[_dy1:_dy2, _dx1:_dx2]
+                                            if _crop.size > 0:
+                                                _cv2.imwrite(str(_idir / "driver_001.jpg"), _crop,
+                                                             [_cv2.IMWRITE_JPEG_QUALITY, 90])
+                                except Exception as _e:
+                                    print(f"  [WARN] driver capture failed: {_e}")
 
                         dr_v.objects.append(DetectedObject(
                             object_type="vehicle",
@@ -592,6 +870,7 @@ def main():
     cell_w, cell_h = 480, 270
 
     global_frame_count = 0
+    ALARM_COOLDOWN: dict[str, datetime] = {}
 
     try:
         while True:
@@ -709,10 +988,15 @@ def main():
                     for obj in analyzed.objects:
                         is_breach = (obj.attributes.get("zone_state") == "inside")
                         activity = obj.attributes.get("activity")
-                        if is_breach or activity:
+                        is_wanted = bool(obj.attributes.get("watchlist_match"))
+                        if is_breach or activity or is_wanted:
                             key = f"{cam.id}_{obj.track_id}"
-                            if key not in ALARM_COOLDOWN or (ts - ALARM_COOLDOWN[key]) > 1.0:
+                            if key not in ALARM_COOLDOWN or (ts - ALARM_COOLDOWN[key]).total_seconds() > 1.0:
                                 ALARM_COOLDOWN[key] = ts
+                                if is_breach:
+                                    print(f"  [BREACH] {cam.id} {obj.track_id} ({obj.object_type}) inside fence — alarming + snapshot")
+                                if is_wanted:
+                                    print(f"  [WATCHLIST-ALARM] {cam.id} {obj.track_id} plate {obj.attributes.get('plate_no')} — alarming + snapshot")
                                 try:
                                     alarm_queue.put_nowait((analyzed, frames[i].copy()))
                                 except queue.Full:
@@ -736,6 +1020,7 @@ def main():
                     break
                 if cam.id not in grid_cams:
                     grid_cams.append(cam.id)
+            grid_idx = {cid: n for n, cid in enumerate(grid_cams)}
 
             # Write raw frames to ALL camera MJPEG buffers first (keeps thumbnails live).
             # Then do the full annotated render only for AI-active cameras.
@@ -775,8 +1060,12 @@ def main():
                         identity = obj.attributes.get("identity", "Unknown")
                         badge = obj.attributes.get("badge_number", "")
                         img_path = obj.attributes.get("image_path", "")
-                        
-                        if identity != "Unknown" and not activity and not is_breach:
+                        plate_no = obj.attributes.get("plate_no", "")
+                        is_wanted = bool(obj.attributes.get("watchlist_match"))
+
+                        if is_wanted:
+                            color = (0, 0, 255)  # RED — wanted vehicle
+                        elif identity != "Unknown" and not activity and not is_breach:
                             color = (0, 255, 0)
                         elif is_breach or activity:
                             color = (0, 0, 255) # RED
@@ -784,38 +1073,38 @@ def main():
                             color = (255, 0, 0) if obj.object_type == "vehicle" else (0, 255, 0)
 
                         track_num = obj.track_id.split("-")[-1]
-                        
-                        if identity != "Unknown":
+
+                        if is_wanted and plate_no:
+                            base = f"WANTED [{plate_no}]"
+                        elif identity != "Unknown":
                             base = f"[{identity} | Badge: {badge}]" if badge else f"[{identity}]"
+                        elif plate_no:
+                            base = f"{obj.object_type.capitalize()} {track_num} [{plate_no}]"
                         else:
                             base = f"{obj.object_type.capitalize()} {track_num}"
 
-                        # Draw the person's photo next to the bounding box if matched
+                        # Draw the person's photo next to the bounding box if matched.
+                        # Thumbnail is cached in memory (loaded from disk once),
+                        # so this costs a memcpy instead of imread+resize.
                         if identity != "Unknown" and img_path:
                             try:
-                                import os
-                                # Convert absolute web path /storage/... to local path
-                                local_path = img_path
-                                if local_path.startswith('/storage'):
-                                    local_path = str(Path(__file__).resolve().parent.parent / "storage" / img_path.split('/storage/')[-1])
-                                if os.path.exists(local_path):
-                                    person_img = cv2.imread(local_path)
-                                    if person_img is not None:
-                                        fh, fw = display.shape[:2]
-                                        size = 60 # Thumbnail size
-                                        person_img = cv2.resize(person_img, (size, size))
-                                        # Top-right corner of the bounding box
-                                        py1, py2 = max(0, y1 - size), max(0, y1)
-                                        if py2 - py1 < size: # If bounding box is at the very top, draw it inside
-                                            py1, py2 = y1, y1 + size
-                                        px1, px2 = max(0, x2), max(0, x2) + size
-                                        if px2 > fw:
-                                            px1, px2 = fw - size, fw
-                                        
-                                        # Overlay the thumbnail
-                                        display[py1:py2, px1:px2] = person_img
-                                        # Draw border around thumbnail
-                                        cv2.rectangle(display, (px1, py1), (px2, py2), (0, 255, 0), 2)
+                                local_path = _resolve_face_path(img_path)
+                                person_img = _get_person_thumb(local_path) if local_path else None
+                                if person_img is not None:
+                                    fh, fw = display.shape[:2]
+                                    size = _THUMB_SIZE
+                                    # Top-right corner of the bounding box
+                                    py1, py2 = max(0, y1 - size), max(0, y1)
+                                    if py2 - py1 < size: # If bounding box is at the very top, draw it inside
+                                        py1, py2 = y1, y1 + size
+                                    px1, px2 = max(0, x2), max(0, x2) + size
+                                    if px2 > fw:
+                                        px1, px2 = fw - size, fw
+
+                                    # Overlay the thumbnail
+                                    display[py1:py2, px1:px2] = person_img
+                                    # Draw border around thumbnail
+                                    cv2.rectangle(display, (px1, py1), (px2, py2), (0, 255, 0), 2)
                             except Exception as e:
                                 pass # Ignore drawing errors so pipeline doesn't crash
 
@@ -826,6 +1115,8 @@ def main():
                         if "plate_no" in obj.attributes:
                             tags.append(
                                 f"[{obj.attributes['plate_no']}]")
+                        if is_wanted:
+                            tags.append("WANTED")
                         if activity:
                             tags.append(activity.upper())
                         if is_breach:
@@ -867,12 +1158,12 @@ def main():
                 CAMERA_REGISTRY.update_live(
                     cam.id, obj_count, cam.latest_frame_id)
 
-                # Grid cell.
+                # Grid cell (grid buffer is preallocated; CUDA probe is hoisted).
                 if cam.id in grid_cams:
-                    g_idx = grid_cams.index(cam.id)
+                    g_idx = grid_idx.get(cam.id)
                     r, c = divmod(g_idx, cols)
                     if r < rows:
-                        if hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                        if _CV2_CUDA:
                             gpu_frame = cv2.cuda_GpuMat()
                             gpu_frame.upload(display)
                             cell = cv2.cuda.resize(gpu_frame, (cell_w, cell_h)).download()

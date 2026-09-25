@@ -49,6 +49,9 @@ def load_or_create(incident_id: str, camera_id: str, module: str,
         "zone_breaches": [],
         "activities_detected": [],
         "plate_numbers": [],
+        "watchlist_hits": [],
+        "driver_snapshot_count": 0,
+        "driver_snapshots": [],
         "snapshot_count": 0,
         "snapshots": [],
         "last_snapshot_at": None,
@@ -82,11 +85,53 @@ def add_snapshot(incident_id: str, frame: np.ndarray,
 
     seq = meta["snapshot_count"] + 1
     filename = f"snapshot_{seq:03d}.jpg"
+    # Quality 90: visually identical evidence crops at ~30% faster JPEG encode
+    # than 95. Evidence bytes only — inference input is untouched.
     cv2.imwrite(str(_incident_dir(incident_id, meta["camera_id"]) / filename), crop,
-                [cv2.IMWRITE_JPEG_QUALITY, 95])
+                [cv2.IMWRITE_JPEG_QUALITY, 90])
     meta["snapshot_count"] = seq
     meta["snapshots"].append(filename)
     meta["last_snapshot_at"] = datetime.now(timezone.utc).isoformat()
+    return filename
+
+
+def add_driver_snapshot(incident_id: str, frame: np.ndarray,
+                        vehicle_bbox: tuple, meta: dict) -> Optional[str]:
+    """Crop the likely driver/windshield region of a vehicle and save it.
+
+    Heuristic: driver sits in the upper-middle of the vehicle box, so take
+    the top ~50% of the box, padded, as the driver crop. Returns the
+    relative filename (driver_NNN.jpg) or None on failure.
+    """
+    try:
+        x1, y1, x2, y2 = [int(v) for v in vehicle_bbox]
+    except Exception:
+        return None
+    h, w = frame.shape[:2]
+    bw, bh = x2 - x1, y2 - y1
+    if bw <= 0 or bh <= 0:
+        return None
+    # Upper half + slight upward expansion (windshield band), side padding.
+    pad_x = int(bw * 0.10)
+    dx1 = max(0, x1 - pad_x)
+    dx2 = min(w, x2 + pad_x)
+    dy1 = max(0, y1 - int(bh * 0.15))
+    dy2 = min(h, y1 + int(bh * 0.55))
+    if dx2 - dx1 < 20 or dy2 - dy1 < 20:
+        return None
+    crop = frame[dy1:dy2, dx1:dx2]
+    if crop.size == 0:
+        return None
+
+    seq = int(meta.get("driver_snapshot_count", 0)) + 1
+    filename = f"driver_{seq:03d}.jpg"
+    cv2.imwrite(str(_incident_dir(incident_id, meta["camera_id"]) / filename), crop,
+                [cv2.IMWRITE_JPEG_QUALITY, 90])
+    meta["driver_snapshot_count"] = seq
+    meta.setdefault("driver_snapshots", []).append(filename)
+    # Also list in snapshots so generic galleries/PDFs pick it up.
+    if filename not in meta["snapshots"]:
+        meta["snapshots"].append(filename)
     return filename
 
 
@@ -128,6 +173,8 @@ def enrich_meta(meta: dict, module: str, obj_attributes: dict,
         plate = obj_attributes["plate_no"]
         if plate not in meta["plate_numbers"]:
             meta["plate_numbers"].append(plate)
+        if obj_attributes.get("watchlist_match") and plate not in meta.get("watchlist_hits", []):
+            meta.setdefault("watchlist_hits", []).append(plate)
 
     if obj_attributes.get("weapon_detected"):
         meta["weapons_detected"] += 1

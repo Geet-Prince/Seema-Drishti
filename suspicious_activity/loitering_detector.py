@@ -30,6 +30,14 @@ class SuspiciousActivityDetector:
     def calculate_distance(self, p1, p2) -> float:
         return math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
 
+    @staticmethod
+    def _dist2(p1, p2) -> float:
+        """Squared Euclidean distance — identical ordering to sqrt version
+        for threshold comparisons, minus the expensive sqrt per pair."""
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        return dx * dx + dy * dy
+
     def process(self, result: DetectionResult) -> DetectionResult:
         """Process a DetectionResult and inject suspicious activity metadata."""
         timestamp = result.timestamp_utc.timestamp()
@@ -68,11 +76,11 @@ class SuspiciousActivityDetector:
                 history = self.track_history[track_id]
                 history['last_seen_timestamp'] = timestamp
                 
-                distance_moved = self.calculate_distance(history['initial_position'], centroid)
+                distance_moved2 = self._dist2(history['initial_position'], centroid)
 
                 # --- Loitering Condition ---
                 # If they move outside the radius, reset the anchor point and timer.
-                if distance_moved > self.distance_threshold:
+                if distance_moved2 > self.distance_threshold * self.distance_threshold:
                     history['initial_position'] = centroid
                     history['first_seen_timestamp'] = timestamp
                     history['activities'].discard("loitering")
@@ -108,14 +116,15 @@ class SuspiciousActivityDetector:
 
     def _find_clusters(self, tracks: List[DetectedObject]) -> List[List[DetectedObject]]:
         clusters = []
+        # Compare squared distances (same clustering result, no sqrt).
+        crowd2 = self.crowd_distance_threshold * self.crowd_distance_threshold
         for track in tracks:
+            c1 = track.attributes.get("centroid", ((track.bbox[0] + track.bbox[2])/2, (track.bbox[1] + track.bbox[3])/2))
             added = False
             for cluster in clusters:
                 for member in cluster:
-                    c1 = track.attributes.get("centroid", ((track.bbox[0] + track.bbox[2])/2, (track.bbox[1] + track.bbox[3])/2))
                     c2 = member.attributes.get("centroid", ((member.bbox[0] + member.bbox[2])/2, (member.bbox[1] + member.bbox[3])/2))
-                    dist = self.calculate_distance(c1, c2)
-                    if dist <= self.crowd_distance_threshold:
+                    if self._dist2(c1, c2) <= crowd2:
                         cluster.append(track)
                         added = True
                         break

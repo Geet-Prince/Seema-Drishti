@@ -29,7 +29,11 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Run IBVAP Live Pipeline")
     parser.add_argument("--source", type=str, default="0", help="Video source (0 for webcam, or path to video file)")
+    parser.add_argument("--no-display", action="store_true",
+                        help="Skip local cv2.imshow window (macOS imshow costs ms per frame). "
+                             "Dashboard MJPEG still works. Zero effect on detection.")
     args = parser.parse_args()
+    show_display = not args.no_display
 
     detector       = HumanDetector()
     tracker        = HumanTracker()
@@ -46,10 +50,20 @@ def main():
     print(f"Video source open: {source}. Press 'q' to stop.")
     frame_id = 0
 
+    import os
     try:
         import winsound
     except ImportError:
         winsound = None
+
+    def play_sound_alert():
+        if sys.platform == "darwin":
+            os.system("afplay /System/Library/Sounds/Ping.aiff &")
+        elif winsound:
+            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+        else:
+            sys.stdout.write('\a')
+            sys.stdout.flush()
 
     try:
         from face_recognition.core import FaceRecognitionWorker
@@ -65,8 +79,19 @@ def main():
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("End of video stream or cannot read the frame.")
-                break
+                # Loop video files forever instead of exiting at EOF.
+                try:
+                    is_file = float(cap.get(cv2.CAP_PROP_FRAME_COUNT)) > 0
+                except Exception:
+                    is_file = False
+                if is_file:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, frame = cap.read()
+                if not ret:
+                    if is_file:
+                        continue  # transient seek hiccup — retry next iteration
+                    print("End of video stream or cannot read the frame.")
+                    break
 
             frame_id += 1
             timestamp = datetime.now(timezone.utc)
@@ -127,12 +152,12 @@ def main():
                     
                 label = f"{base_label} [{activity.upper()}]" if activity else base_label
 
-                if activity and winsound:
+                if activity:
                     for act in activity.split(", "):
                         event_key = f"{obj.track_id}_{act}"
                         if event_key not in beeped_events:
                             beeped_events.add(event_key)
-                            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+                            play_sound_alert()
 
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(frame, label, (x1, y1 - 10),
@@ -146,9 +171,10 @@ def main():
                 f"Humans: {len(analyzed_result.objects)}  Frame: {frame_id}",
                 (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (4, 195, 247), 2)
 
-            cv2.imshow("IBVAP Live — Press q to stop", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            if show_display:
+                cv2.imshow("IBVAP Live — Press q to stop", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
     except KeyboardInterrupt:
         pass

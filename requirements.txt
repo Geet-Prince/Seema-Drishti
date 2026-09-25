@@ -2,8 +2,16 @@
 pydantic>=2.0
 opencv-python>=4.9
 ultralytics>=8.0        # YOLO v8/v11
+# NOTE (NVIDIA GPUs): the default `pip install torch` wheel is CPU-only
+# (torch+cpu), which silently disables CUDA/TensorRT even with an RTX card
+# present. For GPU acceleration install the CUDA build instead:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# plus TensorRT matching your CUDA: pip install tensorrt (Linux/Windows)
+# NOTE (macOS): the Apple Neural Engine path builds automatically on first
+# run but needs: pip install coremltools  (Mac only; FP32 export, no accuracy loss)
 
 # Tracking
+lap>=0.5.12
 # bytetrack is included in ultralytics; deepsort via:
 # deep-sort-realtime>=1.3
 
@@ -14,8 +22,14 @@ easyocr>=1.7
 # Alarm Manager / API
 fastapi>=0.111
 uvicorn[standard]>=0.29
+python-multipart>=0.0.9
 redis>=5.0
 sqlalchemy>=2.0
+
+# Face Recognition (Apple Silicon / Mac compatible: faiss-cpu)
+insightface>=0.7.3
+faiss-cpu>=1.7.4
+onnxruntime>=1.16.0
 
 # Testing
 pytest>=8.0

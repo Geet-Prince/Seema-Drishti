@@ -125,6 +125,14 @@ def init_db() -> None:
                 embedding_json TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS vehicle_watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plate TEXT NOT NULL UNIQUE,
+                owner TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                created_at TEXT
+            );
+
             -- Indexes for fast time-ordered and per-camera reads
             CREATE INDEX IF NOT EXISTS idx_activity_created
                 ON activity_log(created_at DESC);
@@ -187,6 +195,10 @@ def get_recent_events(limit: int = 50) -> list[dict]:
     """Return the N most recent events, using the indexed created_at column."""
     # Use a separate read connection so reads don't block the write lock.
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        init_db()
+    except Exception:
+        pass
     rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
     rconn.row_factory = sqlite3.Row
     rconn.execute("PRAGMA journal_mode=WAL")
@@ -195,6 +207,8 @@ def get_recent_events(limit: int = 50) -> list[dict]:
             "SELECT * FROM events ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        return []
     finally:
         rconn.close()
 
@@ -202,26 +216,44 @@ def get_recent_events(limit: int = 50) -> list[dict]:
 def get_stats() -> dict:
     """Return real-time counts from the database."""
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        init_db()
+    except Exception:
+        pass
+    zeros = {
+        "events":    {"value": 0, "label": "Total Events"},
+        "humans":    {"value": 0, "label": "Total Humans Detected"},
+        "vehicles":  {"value": 0, "label": "Total Vehicles Detected"},
+        "medium":    {"value": 0, "label": "Medium Severity"},
+        "high":      {"value": 0, "label": "High Severity"},
+        "critical":  {"value": 0, "label": "Critical Severity"},
+    }
     rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
     try:
         cur = rconn.cursor()
-        cur.execute("SELECT COUNT(*) FROM events")
-        total = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM events WHERE severity='medium'")
-        medium = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM events WHERE severity='high'")
-        high = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM events WHERE severity='critical'")
-        critical = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM activity_log WHERE object_type='human'")
-        humans = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM activity_log WHERE object_type='vehicle'")
-        vehicles = cur.fetchone()[0]
+        try:
+            cur.execute("SELECT COUNT(*) FROM events")
+            total = cur.fetchone()[0]
+        except sqlite3.OperationalError:
+            return zeros
+
+        try:
+            cur.execute("SELECT COUNT(*) FROM events WHERE severity='medium'")
+            medium = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM events WHERE severity='high'")
+            high = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM events WHERE severity='critical'")
+            critical = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM activity_log WHERE object_type='human'")
+            humans = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM activity_log WHERE object_type='vehicle'")
+            vehicles = cur.fetchone()[0]
+        except sqlite3.OperationalError:
+            return {**zeros, "events": {"value": total, "label": "Total Events"}}
 
         return {
             "events":    {"value": total, "label": "Total Events"},
@@ -246,6 +278,7 @@ def insert_known_personnel(name: str, badge_number: str, image_path: str, embedd
         return cur.lastrowid
 
 def get_all_known_personnel() -> list[dict]:
+    init_db()
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
     rconn.row_factory = sqlite3.Row
@@ -258,5 +291,60 @@ def get_all_known_personnel() -> list[dict]:
             del d['embedding_json']
             result.append(d)
         return result
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        rconn.close()
+
+
+# ── Number-plate watchlist ────────────────────────────────────────────────
+import re as _re
+
+def normalize_plate(plate: str) -> str:
+    """Canonical plate form: uppercase alphanumeric only (spaces/dashes removed)."""
+    return _re.sub(r'[^A-Z0-9]', '', (plate or '').upper())
+
+
+def add_watchlist_plate(plate: str, owner: str = "", notes: str = "") -> dict:
+    """Insert (or update) a watchlist plate. Returns the stored row."""
+    norm = normalize_plate(plate)
+    if len(norm) < 4:
+        raise ValueError("Plate number too short (min 4 characters).")
+    init_db()
+    with _conn_lock:
+        conn = get_connection()
+        conn.execute(
+            """INSERT INTO vehicle_watchlist (plate, owner, notes, created_at)
+               VALUES (?,?,?,?)
+               ON CONFLICT(plate) DO UPDATE SET owner=excluded.owner, notes=excluded.notes""",
+            (norm, owner or "", notes or "", datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM vehicle_watchlist WHERE plate=?", (norm,)).fetchone()
+        return dict(row)
+
+
+def remove_watchlist_plate(plate: str) -> bool:
+    norm = normalize_plate(plate)
+    init_db()
+    with _conn_lock:
+        conn = get_connection()
+        cur = conn.execute("DELETE FROM vehicle_watchlist WHERE plate=?", (norm,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_watchlist_plates() -> list[dict]:
+    """Return all watchlist rows (plates already stored normalized)."""
+    init_db()
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    rconn.row_factory = sqlite3.Row
+    try:
+        try:
+            rows = rconn.execute("SELECT * FROM vehicle_watchlist ORDER BY created_at DESC").fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [dict(r) for r in rows]
     finally:
         rconn.close()

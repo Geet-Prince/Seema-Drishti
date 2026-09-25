@@ -20,8 +20,31 @@ def get_api_worker():
         _api_worker = FaceRecognitionWorker()
     return _api_worker
 
-STORAGE_DIR = Path(__file__).resolve().parents[2] / "storage" / "known_faces"
+STORAGE_DIR = Path(__file__).resolve().parents[1] / "storage" / "known_faces"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Legacy location from older builds (faces were saved under
+# <projects>/storage/known_faces instead of <ibvap>/storage/known_faces,
+# which the API actually serves at /storage). Migrate any stragglers once
+# so previously uploaded faces keep working.
+_LEGACY_DIR = Path(__file__).resolve().parents[2] / "storage" / "known_faces"
+
+def _migrate_legacy_faces() -> None:
+    try:
+        if _LEGACY_DIR.exists():
+            for f in _LEGACY_DIR.iterdir():
+                if f.is_file():
+                    dest = STORAGE_DIR / f.name
+                    if not dest.exists():
+                        try:
+                            import shutil
+                            shutil.copy2(str(f), str(dest))
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
+_migrate_legacy_faces()
 
 @router.post("/api/personnel")
 async def add_personnel(

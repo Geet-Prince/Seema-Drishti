@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+.venv/
+venv/
 *.egg-info/
 
 # Model weights (too large for git — download on first run)
@@ -17,7 +19,7 @@ storage/media/
 video.mp4
 video2.mp4
 storage/incidents/
-storage/events.db
+storage/events.db*
 storage/sync_queue/
 
 # Test/verify scripts

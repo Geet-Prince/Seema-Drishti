@@ -24,9 +24,10 @@ export default function AlertRow({ item, selected, onSelect }) {
   }
   
   // Only try to show identity if the alert actually involves humans
-  const hasIdentity = attrs.identity != null || (item.humansDetected > 0);
-  const identityName = attrs.identity || "Unknown";
-  const imagePath = attrs.image_path;
+  const hasIdentity = attrs.identity != null || item.identity != null || (item.humansDetected > 0);
+  const identityName = attrs.identity || item.identity || "Unknown";
+  const imagePath = attrs.image_path || item.faceImage;
+  const badgeNumber = attrs.badge_number || item.badgeNumber;
 
   return (
     <div
@@ -42,8 +43,15 @@ export default function AlertRow({ item, selected, onSelect }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-[12px] font-medium text-fg">{item.title}</span>
-          <span className="shrink-0 rounded-sm px-1.5 py-0.5 mono text-[9px] font-semibold uppercase tracking-wider" style={{ background: `${color}22`, color }}>
-            {item.dangerLabel || item.severity}
+          <span className="flex shrink-0 items-center gap-1">
+            {(item.watchlistHit || (item.title || '').toLowerCase().includes('watchlist')) && (
+              <span className="rounded-sm px-1.5 py-0.5 mono text-[9px] font-bold uppercase tracking-wider bg-sev-critical text-white">
+                Wanted
+              </span>
+            )}
+            <span className="shrink-0 rounded-sm px-1.5 py-0.5 mono text-[9px] font-semibold uppercase tracking-wider" style={{ background: `${color}22`, color }}>
+              {item.dangerLabel || item.severity}
+            </span>
           </span>
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-ghost">
@@ -63,10 +71,13 @@ export default function AlertRow({ item, selected, onSelect }) {
           
           {hasIdentity && (
             <span className="flex items-center gap-1 text-[10px] font-medium text-fg">
-              Identity: {identityName} {attrs.badge_number ? `(${attrs.badge_number})` : ''}
+              Identity: {identityName} {badgeNumber ? `(${badgeNumber})` : ''}
             </span>
           )}
 
+          {item.plateNo && (
+            <span className="mono text-[9px] font-bold text-live">🔢 {item.plateNo}</span>
+          )}
           {item.confidence != null && (
             <span className="flex items-center gap-1 mono text-[9px] text-dim">
               <Activity className="h-2.5 w-2.5" />

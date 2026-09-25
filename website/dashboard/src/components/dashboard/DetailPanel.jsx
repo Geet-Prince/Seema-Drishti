@@ -48,9 +48,10 @@ export default function DetailPanel({ item, onStatusChange }) {
     }
   }
   
-  const hasIdentity = attrs.identity != null || (item.humansDetected > 0);
-  const identityName = attrs.identity || "Unknown";
-  const imagePath = attrs.image_path;
+  const hasIdentity = attrs.identity != null || item.identity != null || (item.humansDetected > 0);
+  const identityName = attrs.identity || item.identity || "Unknown";
+  const imagePath = attrs.image_path || item.faceImage;
+  const badgeNumber = attrs.badge_number || item.badgeNumber;
 
   return (
     <div className="flex flex-col gap-3">
@@ -81,6 +82,21 @@ export default function DetailPanel({ item, onStatusChange }) {
       </Section>
 
       <Section title="Snapshots">
+        {(item.watchlistHit || item.watchlistHits?.length > 0) && (
+          <div className="mb-2 flex items-center gap-1.5 rounded bg-sev-critical/15 border border-sev-critical/40 px-2 py-1 text-[11px] font-bold text-sev-critical">
+            🚨 WATCHLIST VEHICLE {(item.watchlistHits || []).join(', ')}{item.plateNo ? ` · ${item.plateNo}` : ''}
+          </div>
+        )}
+        {item.driverSnapshots && item.driverSnapshots.length > 0 && (
+          <div className="mb-2">
+            <div className="mono text-[9px] tracking-[0.15em] uppercase text-ghost mb-1">Driver Capture</div>
+            <div className="flex gap-2 overflow-x-auto pb-2 custom-scrollbar">
+              {item.driverSnapshots.map((src, i) => (
+                <img key={'d'+i} src={src} alt="driver" className="h-24 rounded border border-sev-critical/50 object-cover" />
+              ))}
+            </div>
+          </div>
+        )}
         {item.snapshots && item.snapshots.length > 0 ? (
           <div className="flex gap-2 overflow-x-auto pb-2 custom-scrollbar">
             {item.snapshots.map((src, i) => (
@@ -118,7 +134,7 @@ export default function DetailPanel({ item, onStatusChange }) {
                     <User size={10} />
                   </div>
                 )}
-                <span>{identityName} {attrs.badge_number ? `(${attrs.badge_number})` : ''}</span>
+                <span>{identityName} {badgeNumber ? `(${badgeNumber})` : ''}</span>
               </dd>
             </>
           )}
@@ -142,6 +158,14 @@ export default function DetailPanel({ item, onStatusChange }) {
               <dt className="mono text-ghost">License Plate</dt>
               <dd className="mono text-live font-bold bg-live/10 px-1 rounded inline-block">
                 {item.plateNumbers?.join(', ') || item.plateNo}
+              </dd>
+            </>
+          )}
+          {(item.watchlistHits?.length > 0 || item.watchlistHit) && (
+            <>
+              <dt className="mono text-ghost">Watchlist</dt>
+              <dd className="mono text-sev-critical font-bold">
+                🚨 {(item.watchlistHits || []).join(', ') || item.plateNo || 'MATCHED'}
               </dd>
             </>
           )}

@@ -95,16 +95,25 @@ class AlarmManager:
                 obj.attributes.pop("zone_state", None)
                 obj.attributes.pop("activity", None)
             else:
-                # For UNKNOWN humans, wait 1.5s before allowing any rule matching
-                # This gives Face Recognition time to identify them before a false alarm triggers.
+                # For UNKNOWN humans, wait 1.5s before allowing ACTIVITY rules
+                # (loitering etc.) so Face Recognition has time to identify them.
+                # Fence breaches (zone_state == inside) must NOT be delayed —
+                # a fast walk-through would otherwise cross and leave before
+                # the gate opens and no alarm/snapshot would ever fire.
                 if obj.object_type == "human":
-                    start_time = self._track_start_times.get(obj.track_id)
-                    if start_time is None:
-                        self._track_start_times[obj.track_id] = current_time
-                        start_time = current_time
-                    
-                    if current_time - start_time < 1.5:
-                        continue # Suppress alarms for first 1.5s
+                    zone_breach = obj.attributes.get("zone_state") == "inside"
+                    if not zone_breach:
+                        start_time = self._track_start_times.get(obj.track_id)
+                        if start_time is None:
+                            self._track_start_times[obj.track_id] = current_time
+                            start_time = current_time
+
+                        if current_time - start_time < 1.5:
+                            continue  # Suppress alarms for first 1.5s
+                    else:
+                        # Breach goes through immediately; seed the timer so a
+                        # later activity on the same track is gated correctly.
+                        self._track_start_times.setdefault(obj.track_id, current_time)
             
             score, matched_rule = self._score(result.module, obj.attributes, obj.object_type)
             label = matched_rule["severity"].capitalize() if matched_rule else _danger_label(score, self._thresholds)
@@ -147,6 +156,23 @@ class AlarmManager:
                 plate_file = f"plate_{plate_no}.jpg"
                 if plate_file not in meta["snapshots"]:
                     meta["snapshots"].append(plate_file)
+
+            # Driver crops saved directly by the pipeline (watchlist hits) land
+            # in the incident folder ahead of us — adopt them into metadata.
+            if obj.attributes.get("watchlist_match"):
+                try:
+                    from pathlib import Path as _P
+                    idir = _P(__file__).resolve().parents[2] / "storage" / "incidents" / result.camera_id / incident_id
+                    if idir.exists():
+                        for f in sorted(idir.glob("driver_*.jpg")):
+                            if f.name not in meta["snapshots"]:
+                                meta["snapshots"].append(f.name)
+                            if f.name not in meta.get("driver_snapshots", []):
+                                meta.setdefault("driver_snapshots", []).append(f.name)
+                        if meta.get("driver_snapshots"):
+                            self._dirty_meta.add(incident_id)
+                except Exception:
+                    pass
                     
             # Adaptive snapshot: only capture if enough time has passed
             snapshot_file = None
@@ -215,6 +241,7 @@ class AlarmManager:
                         "activities":     meta["activities_detected"],
                         "timestamp":      result.timestamp_utc.isoformat(),
                         "plate_no":       plate_no,
+                        "watchlist_hit":  bool(obj.attributes.get("watchlist_match")),
                     }
                     self._broadcast(alert)
 
@@ -228,8 +255,15 @@ class AlarmManager:
                 continue
             if "attribute" in rule:
                 val = attributes.get(rule["attribute"])
-                if rule.get("equals") is not None and val != rule["equals"]:
-                    continue
+                if rule.get("equals") is not None:
+                    # Activity can be a comma-joined multi-label string like
+                    # "loitering, crowd_formation" — match any single label.
+                    if isinstance(val, str) and "," in val:
+                        parts = [p.strip() for p in val.split(",")]
+                        if rule["equals"] not in parts:
+                            continue
+                    elif val != rule["equals"]:
+                        continue
                 if rule.get("gte") is not None and (val is None or val < rule["gte"]):
                     continue
             

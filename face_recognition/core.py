@@ -17,6 +17,51 @@ except ImportError:
     logger.warning("Face recognition modules (insightface, faiss) not found. Face matching will be disabled.")
 
 
+def resolve_known_face_path(web_path: str | None) -> str | None:
+    """Map a `/storage/...` web path to an absolute file path.
+
+    Checks the live repo storage first (`<ibvap>/storage/...`), then the
+    legacy location (`<projects>/storage/...`) so faces uploaded by older
+    builds still resolve for the pipeline thumbnail overlay.
+    """
+    if not web_path:
+        return None
+    try:
+        from pathlib import Path as _P
+        rel = web_path.split("/storage/", 1)[-1] if "/storage/" in web_path else web_path.lstrip("/")
+        candidates = [
+            _P(__file__).resolve().parents[1] / "storage" / rel,  # <ibvap>/storage/...
+            _P(__file__).resolve().parents[2] / "storage" / rel,  # <projects>/storage/... (legacy)
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+    except Exception:
+        pass
+    return None
+
+
+def _personnel_version() -> tuple[int, int]:
+    """Cheap (count, max_id) signature of the known_personnel table.
+
+    Used to detect newly added faces without reloading embeddings every time.
+    """
+    try:
+        import sqlite3
+        from pathlib import Path as _P
+        db = _P(__file__).resolve().parents[1] / "storage" / "events.db"
+        if not db.exists():
+            return (0, 0)
+        conn = sqlite3.connect(str(db))
+        try:
+            row = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0) FROM known_personnel").fetchone()
+            return (int(row[0] or 0), int(row[1] or 0))
+        finally:
+            conn.close()
+    except Exception:
+        return (0, 0)
+
+
 class FaceRecognitionWorker:
     def __init__(self, confidence_threshold=0.48):
         self.confidence_threshold = confidence_threshold
@@ -37,13 +82,37 @@ class FaceRecognitionWorker:
         if _MODULE_AVAILABLE:
             self._init_model()
             self.reload_database()
+            try:
+                self._db_version = _personnel_version()
+            except Exception:
+                self._db_version = (0, 0)
+            self._last_reload_check = time.time()
             
     def _init_model(self):
-        # We use a fast, lightweight insightface setup suitable for edge processing.
-        # Try CUDA first to prevent CPU bottlenecking, fallback to CPU.
-        self.app = FaceAnalysis(name='buffalo_s', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-        # Prepare for only face detection & recognition
-        self.app.prepare(ctx_id=0, det_size=(640, 640))
+        # Shared provider ordering: TensorRT -> CUDA -> CoreML -> CPU.
+        # Works on NVIDIA (TRT/CUDA acceleration) and MacBook (CoreML),
+        # falling back to CPU anywhere. Never hardcode a single provider.
+        try:
+            from configs.compute import resolve_onnx_providers
+            providers, ctx_id = resolve_onnx_providers()
+        except Exception:
+            providers, ctx_id = ['CPUExecutionProvider'], -1
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                    ctx_id = 0
+            except ImportError:
+                pass
+            try:
+                import onnxruntime
+                if 'CoreMLExecutionProvider' in onnxruntime.get_available_providers():
+                    providers.insert(0, 'CoreMLExecutionProvider')
+            except ImportError:
+                pass
+
+        self.app = FaceAnalysis(name='buffalo_s', providers=providers)
+        self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))
 
     def reload_database(self):
         """Loads all known personnel from SQLite and builds the FAISS index."""
@@ -78,6 +147,11 @@ class FaceRecognitionWorker:
             
         matrix = np.vstack(embeddings)
         self.index.add(matrix)
+        try:
+            self._db_version = _personnel_version()
+            self._last_reload_check = time.time()
+        except Exception:
+            pass
         logger.info(f"Loaded {len(personnel)} face(s) into FAISS index.")
 
     def start(self):
@@ -134,9 +208,24 @@ class FaceRecognitionWorker:
 
     def _process_queue(self):
         while self.running:
+            # Hot-reload newly enrolled faces without a pipeline restart.
+            # The upload API inserts into SQLite from another thread/process,
+            # so poll a cheap (count, max_id) signature every ~10s.
+            try:
+                now = time.time()
+                if now - getattr(self, '_last_reload_check', 0) > 10.0:
+                    self._last_reload_check = now
+                    if _personnel_version() != getattr(self, '_db_version', (0, 0)):
+                        logger.info("New personnel detected — reloading face database.")
+                        self.reload_database()
+            except Exception:
+                pass
             try:
                 track_id, crop = self.task_queue.get(timeout=0.5)
             except queue.Empty:
+                continue
+
+            if self.index is None:
                 continue
                 
             if track_id in self.identity_cache:

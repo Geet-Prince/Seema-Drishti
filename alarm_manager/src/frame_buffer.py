@@ -20,6 +20,7 @@ class FrameBuffer:
         self._frame_bytes: Optional[bytes] = None
         self._updated_at: float = 0.0
         self._fps_limit = fps_limit
+        self._pending = None  # latest in-flight encode future (or None)
 
     def write(self, frame: np.ndarray) -> None:
         """Call this from the camera loop with every raw BGR frame."""
@@ -32,9 +33,17 @@ class FrameBuffer:
         if getattr(self, '_pool', None) is None:
             from concurrent.futures import ThreadPoolExecutor
             self._pool = ThreadPoolExecutor(max_workers=1)
-        
-        # Fire-and-forget encode to prevent blocking the main pipeline
-        self._pool.submit(self._encode_async, frame)
+
+        # Drop the frame if the encoder is still busy with the previous one.
+        # Without this, a slow encoder queues stale frames: latency and memory
+        # grow while the dashboard falls further behind live. Display-only, so
+        # skipping changes nothing about detection accuracy.
+        pending = self._pending
+        if pending is not None and not pending.done():
+            return
+        # Encode a private copy: the caller reuses/mutates its array after
+        # write() returns, which would otherwise corrupt the async encode.
+        self._pending = self._pool.submit(self._encode_async, frame.copy())
 
     def _encode_async(self, frame: np.ndarray) -> None:
         # Lower quality = much faster CPU encode
