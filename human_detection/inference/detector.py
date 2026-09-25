@@ -101,9 +101,28 @@ class HumanDetector:
             # Save to the expected location so future runs are fast
             weights_path.parent.mkdir(parents=True, exist_ok=True)
             self._model.save(str(weights_path))
+            pt_file = str(weights_path)
         else:
             logger.info("Loading weights from %s", weights_path)
-            self._model = YOLO(str(weights_path))
+            pt_file = str(weights_path)
+
+        # macOS: prefer the Apple Neural Engine build of this exact .pt
+        # (FP32 export, same weights/post-processing — no accuracy change).
+        # Builds once on first run; falls back to PyTorch on any failure.
+        try:
+            import platform as _plat
+            if _plat.system() == "Darwin":
+                from configs.compute import ensure_coreml_model
+                cm = ensure_coreml_model(pt_file)
+                if cm != pt_file:
+                    logger.info("Loading CoreML model from %s", cm)
+                    self._model = YOLO(cm)
+                    return
+        except Exception as exc:
+            logger.warning("CoreML path unavailable (%s); using PyTorch.", exc)
+
+        if self._model is None:
+            self._model = YOLO(pt_file)
 
     def _run_inference(self, frame: np.ndarray) -> list[dict]:
         """

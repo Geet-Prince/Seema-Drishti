@@ -7,6 +7,8 @@ ultralytics>=8.0        # YOLO v8/v11
 # present. For GPU acceleration install the CUDA build instead:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu121
 # plus TensorRT matching your CUDA: pip install tensorrt (Linux/Windows)
+# NOTE (macOS): the Apple Neural Engine path builds automatically on first
+# run but needs: pip install coremltools  (Mac only; FP32 export, no accuracy loss)
 
 # Tracking
 lap>=0.5.12

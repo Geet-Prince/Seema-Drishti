@@ -365,14 +365,33 @@ class ConsolidatedBatchedAI:
         _default_engine = Path(__file__).resolve().parent / 'yolov8s.engine'
         _coreml_model = Path(__file__).resolve().parent / 'yolov8s.mlpackage'
         _ENGINE = Path(os.environ.get('IBVAP_TRT_ENGINE', str(_default_engine)))
+        _COREML = Path(os.environ.get('IBVAP_COREML_MODEL', str(_coreml_model)))
         _FALLBACK = str(Path(__file__).resolve().parent / 'yolov8s.pt')
 
         self._using_trt = False
-        if platform.system() == "Darwin" and _coreml_model.exists():
-            print(f'  [NPU] CoreML model found ({_coreml_model.name}). Loading Apple Neural Engine format...')
-            self.model = YOLO(str(_coreml_model))
+        self._using_coreml = False
+        if platform.system() == "Darwin":
+            # Apple Neural Engine path: reuse a .mlpackage built from this
+            # exact .pt, else build it once (FP32, same weights — no accuracy
+            # change). Falls back to PyTorch CPU, never crashes.
+            try:
+                from configs.compute import ensure_coreml_model
+                weights = ensure_coreml_model(_FALLBACK, str(_COREML),
+                                              imgsz=self.imgsz)
+            except Exception as exc:
+                print(f'  [WARN] CoreML probe failed ({exc}); using {_FALLBACK}')
+                weights = _FALLBACK
+            if weights != _FALLBACK:
+                print(f'  [NPU] CoreML model found ({Path(weights).name}). Loading Apple Neural Engine format...')
+            try:
+                self.model = YOLO(str(weights))
+                self._using_coreml = str(weights).endswith(".mlpackage")
+                if self._using_coreml:
+                    print('  [NPU] CoreML model loaded — Apple Neural Engine / GPU acceleration active')
+            except Exception as exc:
+                print(f'  [WARN] Failed to load {weights} ({exc}); falling back to {_FALLBACK}')
+                self.model = YOLO(_FALLBACK)
             self.device = "cpu"
-            print('  [NPU] CoreML model loaded — Apple Neural Engine / GPU acceleration active')
         else:
             # TensorRT path (NVIDIA only): reuse a compatible .engine, else
             # try a one-time export from .pt (GPU-specific build), else .pt.
@@ -852,7 +871,6 @@ def main():
 
     global_frame_count = 0
     ALARM_COOLDOWN: dict[str, datetime] = {}
-    grid = None  # preallocated once inside the loop (fixed shape)
 
     try:
         while True:
@@ -988,13 +1006,8 @@ def main():
 
             # ——— STAGE 4: RENDER ———————————————————————————————————————————
             t_render_start = time.time()
-            # Reuse the grid canvas across frames (same shape every loop);
-            # a fresh np.zeros each iteration was pure allocator churn.
-            if grid is None:
-                grid = np.zeros(
-                    (rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
-            else:
-                grid[:] = 0
+            grid = np.zeros(
+                (rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
 
             ai_cam_id = CAMERA_REGISTRY.active_ai_cam
             grid_cams = []

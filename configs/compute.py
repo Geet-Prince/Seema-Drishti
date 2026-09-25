@@ -334,6 +334,70 @@ def ensure_trt_engine(pt_path: str, engine_path: str | None = None,
     return pt_path
 
 
+def ensure_coreml_model(pt_path: str, mlpackage_path: str | None = None,
+                        imgsz: int = 640) -> str:
+    """Return the CoreML .mlpackage to load (Apple Neural Engine path).
+
+    Accuracy contract: FP32 export (half=False) with NMS kept in Python
+    (identical post-processing to the .pt), so detections match the
+    PyTorch model — no mAP cost. The .mlpackage is built once from the
+    exact .pt in use, then reused.
+
+    coremltools only runs on macOS, so the build happens on the Mac itself
+    (first pipeline start, ~1-3 min). On other OSes this returns pt_path.
+    Never raises.
+    """
+    import pathlib
+
+    pt = pathlib.Path(pt_path)
+    ml = (pathlib.Path(mlpackage_path) if mlpackage_path
+          else pt.with_suffix(".mlpackage"))
+    if ml.exists():
+        return str(ml)
+    if platform.system() != "Darwin":
+        logger.info("CoreML build skipped (not macOS); using %s", pt_path)
+        return pt_path
+    if os.environ.get("IBVAP_NO_COREML_EXPORT") == "1":
+        return pt_path
+    try:
+        import coremltools  # noqa: F401
+    except ImportError:
+        logger.warning(
+            "coremltools not installed; cannot build Apple Neural Engine "
+            "model (run: pip install coremltools on the Mac). Using %s",
+            pt_path,
+        )
+        return pt_path
+    try:
+        from ultralytics import YOLO
+
+        logger.info(
+            "Exporting CoreML FP32 model from %s (one-time, ~1-3 min, "
+            "same weights — no accuracy change)...",
+            pt_path,
+        )
+        exported = YOLO(str(pt)).export(
+            format="coreml", imgsz=imgsz, nms=False,
+        )
+        try:
+            import shutil as _shutil
+
+            if str(exported) != str(ml):
+                if ml.exists():
+                    _shutil.rmtree(str(ml), ignore_errors=True)
+                _shutil.move(str(exported), str(ml))
+        except Exception:
+            pass
+        if ml.exists():
+            logger.info("CoreML model ready: %s", ml)
+            return str(ml)
+        if exported and pathlib.Path(str(exported)).exists():
+            return str(exported)
+    except Exception as exc:
+        logger.warning("CoreML export failed (%s); using %s", exc, pt_path)
+    return pt_path
+
+
 def engine_report(engine_path: str, pt_path: str = "") -> dict:
     """Inspect a TensorRT engine file without needing a GPU.
 
@@ -406,3 +470,15 @@ if __name__ == "__main__":
         _eng = _sys.argv[1]
     print("=== TensorRT engine ===")
     print(_json.dumps(engine_report(_eng), indent=1))
+    print("=== CoreML (Apple Neural Engine) ===")
+    _cm = os.environ.get("IBVAP_COREML_MODEL", "yolov8s.mlpackage")
+    import pathlib as _pl
+    print(_json.dumps({
+        "path": _cm,
+        "exists": _pl.Path(_cm).exists(),
+        "buildable_here": platform.system() == "Darwin",
+        "note": "built automatically on first Mac run "
+                "(pip install coremltools required on the Mac)"
+                if platform.system() == "Darwin"
+                else "built on the Mac itself; this host only needs the .pt",
+    }, indent=1))
