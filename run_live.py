@@ -29,7 +29,11 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Run IBVAP Live Pipeline")
     parser.add_argument("--source", type=str, default="0", help="Video source (0 for webcam, or path to video file)")
+    parser.add_argument("--no-display", action="store_true",
+                        help="Skip local cv2.imshow window (macOS imshow costs ms per frame). "
+                             "Dashboard MJPEG still works. Zero effect on detection.")
     args = parser.parse_args()
+    show_display = not args.no_display
 
     detector       = HumanDetector()
     tracker        = HumanTracker()
@@ -167,9 +171,10 @@ def main():
                 f"Humans: {len(analyzed_result.objects)}  Frame: {frame_id}",
                 (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (4, 195, 247), 2)
 
-            cv2.imshow("IBVAP Live — Press q to stop", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            if show_display:
+                cv2.imshow("IBVAP Live — Press q to stop", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
 
     except KeyboardInterrupt:
         pass

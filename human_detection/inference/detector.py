@@ -116,7 +116,17 @@ class HumanDetector:
         target_classes: list[int] = self._cfg["model"]["target_classes"]
         conf_thresh: float = self._cfg["model"]["confidence_threshold"]
         iou_thresh: float = self._cfg["model"]["iou_threshold"]
-        device: str = self._cfg["model"]["device"]
+        # Auto-switch compute backend (NVIDIA TensorRT/CUDA <-> Apple CPU).
+        # "auto" (or legacy unset) resolves via configs/compute.py; explicit
+        # "cpu"/"cuda:0"/"mps" values are honored. FP16 is enabled for real
+        # CUDA only — half=True on CPU/MPS is slower or errors out.
+        try:
+            from configs.compute import resolve_yolo_settings
+            yolo_cfg = resolve_yolo_settings(self._cfg["model"].get("device"))
+        except Exception:
+            yolo_cfg = {"device": self._cfg["model"].get("device") or "cpu",
+                        "half": False, "imgsz": 640}
+        device: str = yolo_cfg["device"]
 
         results = self._model.predict(
             source=frame,
@@ -124,8 +134,9 @@ class HumanDetector:
             conf=conf_thresh,
             iou=iou_thresh,
             device=device,
+            imgsz=yolo_cfg["imgsz"],
             verbose=False,
-            half=True,
+            half=yolo_cfg["half"],
         )
 
         detections = []

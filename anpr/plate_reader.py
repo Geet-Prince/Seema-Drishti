@@ -4,15 +4,19 @@ import cv2
 
 class PlateReader:
     def __init__(self):
-        import platform
+        # GPU only for real CUDA (shared probe also catches the
+        # NVIDIA-present-but-torch-CPU trap). EasyOCR on MPS/CPU threads
+        # races YOLO and aborts macOS, so CPU elsewhere on both platforms.
         try:
-            import torch
-            # easyocr gpu=True + torch MPS in a background thread races with
-            # YOLO MPS inference and aborts macOS (command-buffer assertion).
-            # Only enable GPU when real CUDA is present; CPU elsewhere.
-            use_gpu = bool(torch.cuda.is_available() and platform.system() != "Darwin")
+            from configs.compute import detect_compute
+            use_gpu = detect_compute()["device"].startswith("cuda")
         except Exception:
-            use_gpu = False
+            import platform
+            try:
+                import torch
+                use_gpu = bool(torch.cuda.is_available() and platform.system() != "Darwin")
+            except Exception:
+                use_gpu = False
         self.reader = easyocr.Reader(['en'], gpu=use_gpu)
         self.pattern = re.compile(r'[^A-Z0-9]')
 

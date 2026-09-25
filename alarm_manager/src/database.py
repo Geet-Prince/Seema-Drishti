@@ -195,6 +195,10 @@ def get_recent_events(limit: int = 50) -> list[dict]:
     """Return the N most recent events, using the indexed created_at column."""
     # Use a separate read connection so reads don't block the write lock.
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        init_db()
+    except Exception:
+        pass
     rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
     rconn.row_factory = sqlite3.Row
     rconn.execute("PRAGMA journal_mode=WAL")
@@ -203,6 +207,8 @@ def get_recent_events(limit: int = 50) -> list[dict]:
             "SELECT * FROM events ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        return []
     finally:
         rconn.close()
 
@@ -210,26 +216,44 @@ def get_recent_events(limit: int = 50) -> list[dict]:
 def get_stats() -> dict:
     """Return real-time counts from the database."""
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        init_db()
+    except Exception:
+        pass
+    zeros = {
+        "events":    {"value": 0, "label": "Total Events"},
+        "humans":    {"value": 0, "label": "Total Humans Detected"},
+        "vehicles":  {"value": 0, "label": "Total Vehicles Detected"},
+        "medium":    {"value": 0, "label": "Medium Severity"},
+        "high":      {"value": 0, "label": "High Severity"},
+        "critical":  {"value": 0, "label": "Critical Severity"},
+    }
     rconn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
     try:
         cur = rconn.cursor()
-        cur.execute("SELECT COUNT(*) FROM events")
-        total = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM events WHERE severity='medium'")
-        medium = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM events WHERE severity='high'")
-        high = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM events WHERE severity='critical'")
-        critical = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM activity_log WHERE object_type='human'")
-        humans = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM activity_log WHERE object_type='vehicle'")
-        vehicles = cur.fetchone()[0]
+        try:
+            cur.execute("SELECT COUNT(*) FROM events")
+            total = cur.fetchone()[0]
+        except sqlite3.OperationalError:
+            return zeros
+
+        try:
+            cur.execute("SELECT COUNT(*) FROM events WHERE severity='medium'")
+            medium = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM events WHERE severity='high'")
+            high = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM events WHERE severity='critical'")
+            critical = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM activity_log WHERE object_type='human'")
+            humans = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM activity_log WHERE object_type='vehicle'")
+            vehicles = cur.fetchone()[0]
+        except sqlite3.OperationalError:
+            return {**zeros, "events": {"value": total, "label": "Total Events"}}
 
         return {
             "events":    {"value": total, "label": "Total Events"},

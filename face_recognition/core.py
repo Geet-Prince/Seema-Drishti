@@ -89,23 +89,27 @@ class FaceRecognitionWorker:
             self._last_reload_check = time.time()
             
     def _init_model(self):
-        # Dynamic provider & device detection (CUDA vs CoreML vs CPU)
-        providers = ['CPUExecutionProvider']
-        ctx_id = -1
+        # Shared provider ordering: TensorRT -> CUDA -> CoreML -> CPU.
+        # Works on NVIDIA (TRT/CUDA acceleration) and MacBook (CoreML),
+        # falling back to CPU anywhere. Never hardcode a single provider.
         try:
-            import torch
-            if torch.cuda.is_available():
-                providers.insert(0, 'CUDAExecutionProvider')
-                ctx_id = 0
-        except ImportError:
-            pass
-
-        try:
-            import onnxruntime
-            if 'CoreMLExecutionProvider' in onnxruntime.get_available_providers():
-                providers.insert(0, 'CoreMLExecutionProvider')
-        except ImportError:
-            pass
+            from configs.compute import resolve_onnx_providers
+            providers, ctx_id = resolve_onnx_providers()
+        except Exception:
+            providers, ctx_id = ['CPUExecutionProvider'], -1
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                    ctx_id = 0
+            except ImportError:
+                pass
+            try:
+                import onnxruntime
+                if 'CoreMLExecutionProvider' in onnxruntime.get_available_providers():
+                    providers.insert(0, 'CoreMLExecutionProvider')
+            except ImportError:
+                pass
 
         self.app = FaceAnalysis(name='buffalo_s', providers=providers)
         self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))

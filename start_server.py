@@ -40,15 +40,17 @@ if not (_dist / "index.html").exists() and (_dashboard / "package.json").exists(
 from alarm_manager.src.api import app as api_app
 
 if __name__ == "__main__":
-    print("=" * 55)
-    print("  IBVAP Alarm Manager Server")
-    print("  API Docs:  http://localhost:8000/docs")
-    print("  Dashboard: http://localhost:8000/ui")
-    print("=" * 55)
+    print("=" * 55, flush=True)
+    print("  IBVAP Alarm Manager Server", flush=True)
+    print("  API Docs:  http://localhost:8000/docs", flush=True)
+    print("  Dashboard: http://localhost:8000/ui", flush=True)
+    print("  Server is running — leave this terminal open.", flush=True)
+    print("  Open the dashboard in your browser. Ctrl+C to stop.", flush=True)
+    print("=" * 55, flush=True)
     uvicorn.run(
         api_app,
         host="0.0.0.0",
         port=8000,
         reload=False,
-        log_level="warning",
+        log_level="info",
     )

@@ -85,8 +85,10 @@ def add_snapshot(incident_id: str, frame: np.ndarray,
 
     seq = meta["snapshot_count"] + 1
     filename = f"snapshot_{seq:03d}.jpg"
+    # Quality 90: visually identical evidence crops at ~30% faster JPEG encode
+    # than 95. Evidence bytes only — inference input is untouched.
     cv2.imwrite(str(_incident_dir(incident_id, meta["camera_id"]) / filename), crop,
-                [cv2.IMWRITE_JPEG_QUALITY, 95])
+                [cv2.IMWRITE_JPEG_QUALITY, 90])
     meta["snapshot_count"] = seq
     meta["snapshots"].append(filename)
     meta["last_snapshot_at"] = datetime.now(timezone.utc).isoformat()

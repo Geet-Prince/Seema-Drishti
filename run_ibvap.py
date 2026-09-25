@@ -54,6 +54,64 @@ except Exception:
 
 
 # â”€â”€ Simple IOU Tracker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Render-path caches (hot-loop optimizations, zero inference impact) ──
+# Person thumbnails were re-read from disk + decoded + resized EVERY frame for
+# every recognized identity. Cache the 60px overlay once per image path.
+_THUMB_CACHE: dict = {}
+_THUMB_SIZE = 60
+
+
+def _get_person_thumb(local_path: str):
+    """Return a cached 60x60 BGR thumbnail, loading from disk only once."""
+    thumb = _THUMB_CACHE.get(local_path)
+    if thumb is None:
+        import cv2 as _cv2
+        import os as _os
+        if not local_path or not _os.path.exists(local_path):
+            return None
+        img = _cv2.imread(local_path)
+        if img is None:
+            return None
+        thumb = _cv2.resize(img, (_THUMB_SIZE, _THUMB_SIZE))
+        # Bound memory: thumbnails are ~10KB each; 200 entries is plenty.
+        if len(_THUMB_CACHE) >= 200:
+            _THUMB_CACHE.clear()
+        _THUMB_CACHE[local_path] = thumb
+    return thumb
+
+
+def _resolve_face_path(img_path: str):
+    """Resolve a /storage/... web path to a local file, cached per path."""
+    key = f"path:{img_path}"
+    if key in _THUMB_CACHE:
+        return _THUMB_CACHE[key]
+    local_path = img_path
+    if local_path and local_path.startswith('/storage'):
+        try:
+            from face_recognition.core import resolve_known_face_path
+            local_path = resolve_known_face_path(img_path) or img_path
+        except Exception:
+            import os
+            rel = img_path.split('/storage/')[-1]
+            for _base in (Path(__file__).resolve().parent,
+                          Path(__file__).resolve().parent.parent):
+                _cand = str(_base / "storage" / rel)
+                if os.path.exists(_cand):
+                    local_path = _cand
+                    break
+    _THUMB_CACHE[key] = local_path
+    return local_path
+
+
+# OpenCV-CUDA probe hoisted out of the per-cell hot loop: previously
+# cv2.cuda.getCudaEnabledDeviceCount() ran for every grid cell every frame.
+try:
+    import cv2 as _cv2_probe
+    _CV2_CUDA = hasattr(_cv2_probe, 'cuda') and _cv2_probe.cuda.getCudaEnabledDeviceCount() > 0
+except Exception:
+    _CV2_CUDA = False
+
+
 class SimpleIOUTracker:
     """Per-camera IOU-based tracker for assigning stable track IDs.
 
@@ -245,27 +303,27 @@ class ThreadedCamera:
             self.cap.release()
 
 
-# Helper to get the best acceleration device for the host machine
+# Helper to get the best acceleration device for the host machine.
+# Delegates to configs/compute.py: NVIDIA -> CUDA/TensorRT, macOS -> CPU
+# (PyTorch MPS aborts sustained YOLO inference), else MPS/CPU.
+# Override with IBVAP_DEVICE=cpu|cuda|mps.
 def get_best_device():
+    try:
+        from configs.compute import detect_compute
+        return detect_compute()["device"]
+    except Exception:
+        pass
     import os
     import platform
-    # Explicit override: IBVAP_DEVICE=cpu|cuda|mps
     forced = os.environ.get("IBVAP_DEVICE", "").strip().lower()
     if forced in ("cpu", "cuda", "cuda:0", "mps"):
         return "cuda:0" if forced == "cuda" else forced
     if torch.cuda.is_available():
         return "cuda:0"
-    # NOTE: PyTorch MPS backend is NOT thread-safe and aborts sustained
-    # YOLO video inference on macOS with:
-    #   AGXG17GFamilyCommandBuffer ... failed assertion `A command encoder
-    #   is already encoding to this command buffer' -> zsh: abort
-    # This is triggered by back-to-back predict() calls and/or concurrent
-    # torch use from worker threads (ANPR/face). Force CPU on macOS for
-    # stability. Set IBVAP_DEVICE=mps to opt back into MPS at your own risk.
     if platform.system() == "Darwin":
         return "cpu"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"   # Apple Silicon GPU acceleration (non-Darwin only)
+        return "mps"
     return "cpu"
 
 
@@ -279,43 +337,88 @@ class ConsolidatedBatchedAI:
         import platform
         from pathlib import Path
 
-        # Only use TensorRT on Linux/Windows if CUDA is present
-        is_nvidia = torch.cuda.is_available() and platform.system() != "Darwin"
+        try:
+            from configs.compute import (
+                detect_compute, ensure_trt_engine,
+                apply_torch_thread_limits,
+            )
+            _compute = detect_compute()
+        except Exception:
+            _compute = {"device": get_best_device(), "use_half": False,
+                        "use_trt": False, "gpu_name": "",
+                        "note": "compute probe unavailable"}
+            def ensure_trt_engine(pt, eng=None, imgsz=640):  # type: ignore
+                return pt
+            def apply_torch_thread_limits():  # type: ignore
+                pass
+        print(f"  [COMPUTE] {_compute.get('note', '')}")
+        if _compute.get("gpu_name") and not _compute.get("use_trt"):
+            print(f"  [COMPUTE] GPU present but unused: {_compute['note']}")
+
+        try:
+            self.imgsz = int(os.environ.get("IBVAP_IMGSZ", "640"))
+        except ValueError:
+            self.imgsz = 640
+        if self.imgsz not in (320, 416, 480, 640, 800, 960, 1280):
+            self.imgsz = 640
+
         _default_engine = Path(__file__).resolve().parent / 'yolov8s.engine'
         _coreml_model = Path(__file__).resolve().parent / 'yolov8s.mlpackage'
         _ENGINE = Path(os.environ.get('IBVAP_TRT_ENGINE', str(_default_engine)))
         _FALLBACK = str(Path(__file__).resolve().parent / 'yolov8s.pt')
 
-        if is_nvidia and _ENGINE.exists():
-            print('  [GPU] Loading TensorRT engine (yolov8s.engine)...')
-            self.model = YOLO(str(_ENGINE))
-            self._using_trt = True
-            self.device = 0
-            print('  [GPU] TensorRT engine loaded — FP16, fused kernels active')
-        elif platform.system() == "Darwin" and _coreml_model.exists():
+        self._using_trt = False
+        if platform.system() == "Darwin" and _coreml_model.exists():
             print(f'  [NPU] CoreML model found ({_coreml_model.name}). Loading Apple Neural Engine format...')
             self.model = YOLO(str(_coreml_model))
-            self._using_trt = False
             self.device = "cpu"
             print('  [NPU] CoreML model loaded — Apple Neural Engine / GPU acceleration active')
         else:
-            if not is_nvidia and _ENGINE.exists():
-                print(f'  [INFO] TensorRT engine detected but not compatible with macOS/non-CUDA. Using {_FALLBACK} on {get_best_device().upper()}.')
+            # TensorRT path (NVIDIA only): reuse a compatible .engine, else
+            # try a one-time export from .pt (GPU-specific build), else .pt.
+            # A foreign .engine raises on load — always fall back, never crash.
+            weights = _FALLBACK
+            if _compute.get("use_trt"):
+                if not _ENGINE.exists():
+                    print('  [GPU] No TensorRT engine found — building one from '
+                          f'{Path(_FALLBACK).name} (one-time, ~1-3 min)...')
+                weights = ensure_trt_engine(_FALLBACK, str(_ENGINE),
+                                            imgsz=self.imgsz)
+            elif _ENGINE.exists():
+                print(f'  [INFO] TensorRT engine present but unusable here '
+                      f'({_compute.get("note", "no CUDA")}). Using '
+                      f'{Path(_FALLBACK).name} on {_compute.get("device", "cpu")}.')
             else:
                 print(f'  [WARN] Engine not found at {_ENGINE}, falling back to {_FALLBACK}')
-            self.model = YOLO(_FALLBACK)
-            self._using_trt = False
-            self.device = get_best_device()
-            self.model.to(self.device)
-            print(f'  [AI] Model loaded on device: {self.device}')
-            if is_nvidia:
+            try:
+                print(f'  [AI] Loading {Path(weights).name}...')
+                self.model = YOLO(str(weights))
+                self._using_trt = str(weights).endswith(".engine")
+                if self._using_trt:
+                    print('  [GPU] TensorRT engine loaded — FP16, fused kernels active')
+            except Exception as exc:
+                print(f'  [WARN] Failed to load {weights} ({exc}); falling back to {_FALLBACK}')
+                self.model = YOLO(_FALLBACK)
+                self._using_trt = False
+            if self._using_trt:
+                self.device = 0
+            else:
+                self.device = _compute.get("device", get_best_device())
                 try:
-                    self.model.model = torch.compile(
-                        self.model.model, mode='reduce-overhead', fullgraph=False
-                    )
-                    print('  [GPU] torch.compile enabled (TRT not found)')
-                except Exception as _e:
-                    print(f'  [WARN] torch.compile unavailable: {_e}')
+                    self.model.to(self.device)
+                except Exception as exc:
+                    print(f'  [WARN] model.to({self.device}) failed ({exc}); using CPU')
+                    self.device = "cpu"
+                print(f'  [AI] Model loaded on device: {self.device} (imgsz={self.imgsz})')
+                if _compute.get("use_trt") or (
+                        str(self.device).startswith("cuda") and torch.cuda.is_available()):
+                    try:
+                        self.model.model = torch.compile(
+                            self.model.model, mode='reduce-overhead', fullgraph=False
+                        )
+                        print('  [GPU] torch.compile enabled (extra kernel fusion)')
+                    except Exception as _e:
+                        print(f'  [WARN] torch.compile unavailable: {_e}')
 
         self._anpr = None
         if _ANPR_AVAILABLE:
@@ -343,13 +446,10 @@ class ConsolidatedBatchedAI:
         self._watchlist_checked_at: float = 0.0
         self._refresh_watchlist(force=True)
         # Keep CPU thread usage bounded so background decode/render threads
-        # don't starve inference (tune via IBVAP_TORCH_THREADS).
+        # don't starve inference (tune via IBVAP_TORCH_THREADS). Same bounds
+        # suit M5 efficiency cores and NVIDIA hosts.
         try:
-            import os as _os
-            _n = int(_os.environ.get("IBVAP_TORCH_THREADS", "4"))
-            if _n >= 1:
-                torch.set_num_threads(_n)
-                torch.set_num_interop_threads(1)
+            apply_torch_thread_limits()
         except Exception:
             pass
 
@@ -479,9 +579,9 @@ class ConsolidatedBatchedAI:
                         source=chunk,
                         classes=[0, 2, 3, 5, 7],
                         conf=0.25,
-                        imgsz=640,
+                        imgsz=getattr(self, 'imgsz', 640),
                         device=self.device,
-                        
+
                         verbose=False,
                     )
                     yolo_results.extend(chunk_results)
@@ -752,6 +852,7 @@ def main():
 
     global_frame_count = 0
     ALARM_COOLDOWN: dict[str, datetime] = {}
+    grid = None  # preallocated once inside the loop (fixed shape)
 
     try:
         while True:
@@ -887,8 +988,13 @@ def main():
 
             # ——— STAGE 4: RENDER ———————————————————————————————————————————
             t_render_start = time.time()
-            grid = np.zeros(
-                (rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
+            # Reuse the grid canvas across frames (same shape every loop);
+            # a fresh np.zeros each iteration was pure allocator churn.
+            if grid is None:
+                grid = np.zeros(
+                    (rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
+            else:
+                grid[:] = 0
 
             ai_cam_id = CAMERA_REGISTRY.active_ai_cam
             grid_cams = []
@@ -901,6 +1007,7 @@ def main():
                     break
                 if cam.id not in grid_cams:
                     grid_cams.append(cam.id)
+            grid_idx = {cid: n for n, cid in enumerate(grid_cams)}
 
             # Write raw frames to ALL camera MJPEG buffers first (keeps thumbnails live).
             # Then do the full annotated render only for AI-active cameras.
@@ -963,44 +1070,28 @@ def main():
                         else:
                             base = f"{obj.object_type.capitalize()} {track_num}"
 
-                        # Draw the person's photo next to the bounding box if matched
+                        # Draw the person's photo next to the bounding box if matched.
+                        # Thumbnail is cached in memory (loaded from disk once),
+                        # so this costs a memcpy instead of imread+resize.
                         if identity != "Unknown" and img_path:
                             try:
-                                import os
-                                # Convert web path /storage/... to a local file.
-                                # Repo storage first (<ibvap>/storage/...), legacy
-                                # (<projects>/storage/...) fallback for older uploads.
-                                local_path = img_path
-                                if local_path.startswith('/storage'):
-                                    try:
-                                        from face_recognition.core import resolve_known_face_path
-                                        local_path = resolve_known_face_path(img_path) or img_path
-                                    except Exception:
-                                        rel = img_path.split('/storage/')[-1]
-                                        for _base in (Path(__file__).resolve().parent,
-                                                      Path(__file__).resolve().parent.parent):
-                                            _cand = str(_base / "storage" / rel)
-                                            if os.path.exists(_cand):
-                                                local_path = _cand
-                                                break
-                                if local_path and os.path.exists(local_path):
-                                    person_img = cv2.imread(local_path)
-                                    if person_img is not None:
-                                        fh, fw = display.shape[:2]
-                                        size = 60 # Thumbnail size
-                                        person_img = cv2.resize(person_img, (size, size))
-                                        # Top-right corner of the bounding box
-                                        py1, py2 = max(0, y1 - size), max(0, y1)
-                                        if py2 - py1 < size: # If bounding box is at the very top, draw it inside
-                                            py1, py2 = y1, y1 + size
-                                        px1, px2 = max(0, x2), max(0, x2) + size
-                                        if px2 > fw:
-                                            px1, px2 = fw - size, fw
-                                        
-                                        # Overlay the thumbnail
-                                        display[py1:py2, px1:px2] = person_img
-                                        # Draw border around thumbnail
-                                        cv2.rectangle(display, (px1, py1), (px2, py2), (0, 255, 0), 2)
+                                local_path = _resolve_face_path(img_path)
+                                person_img = _get_person_thumb(local_path) if local_path else None
+                                if person_img is not None:
+                                    fh, fw = display.shape[:2]
+                                    size = _THUMB_SIZE
+                                    # Top-right corner of the bounding box
+                                    py1, py2 = max(0, y1 - size), max(0, y1)
+                                    if py2 - py1 < size: # If bounding box is at the very top, draw it inside
+                                        py1, py2 = y1, y1 + size
+                                    px1, px2 = max(0, x2), max(0, x2) + size
+                                    if px2 > fw:
+                                        px1, px2 = fw - size, fw
+
+                                    # Overlay the thumbnail
+                                    display[py1:py2, px1:px2] = person_img
+                                    # Draw border around thumbnail
+                                    cv2.rectangle(display, (px1, py1), (px2, py2), (0, 255, 0), 2)
                             except Exception as e:
                                 pass # Ignore drawing errors so pipeline doesn't crash
 
@@ -1054,12 +1145,12 @@ def main():
                 CAMERA_REGISTRY.update_live(
                     cam.id, obj_count, cam.latest_frame_id)
 
-                # Grid cell.
+                # Grid cell (grid buffer is preallocated; CUDA probe is hoisted).
                 if cam.id in grid_cams:
-                    g_idx = grid_cams.index(cam.id)
+                    g_idx = grid_idx.get(cam.id)
                     r, c = divmod(g_idx, cols)
                     if r < rows:
-                        if hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                        if _CV2_CUDA:
                             gpu_frame = cv2.cuda_GpuMat()
                             gpu_frame.upload(display)
                             cell = cv2.cuda.resize(gpu_frame, (cell_w, cell_h)).download()

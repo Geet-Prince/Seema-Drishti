@@ -36,7 +36,7 @@ models:
     state: Experimental
     weights: "models/current/best.pt"
     confidence_threshold: 0.5
-    device: "mps"   # "cpu" | "cuda:0" | "mps"
+    device: "auto"   # "auto" | "cpu" | "cuda:0" | "mps" (auto = NVIDIA TensorRT/CUDA <-> Apple CPU)
 
   human_tracking:
     state: Experimental
@@ -46,7 +46,7 @@ models:
     state: Experimental
     weights: "models/current/best.pt"
     confidence_threshold: 0.5
-    device: "mps"
+    device: "auto"
 
   anpr:
     state: Experimental

@@ -2,6 +2,11 @@
 pydantic>=2.0
 opencv-python>=4.9
 ultralytics>=8.0        # YOLO v8/v11
+# NOTE (NVIDIA GPUs): the default `pip install torch` wheel is CPU-only
+# (torch+cpu), which silently disables CUDA/TensorRT even with an RTX card
+# present. For GPU acceleration install the CUDA build instead:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# plus TensorRT matching your CUDA: pip install tensorrt (Linux/Windows)
 
 # Tracking
 lap>=0.5.12

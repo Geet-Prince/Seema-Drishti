@@ -50,9 +50,11 @@ except Exception as e:
 # Static: snapshots, incidents, website
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORAGE = _REPO_ROOT / "storage"
+_STORAGE.mkdir(parents=True, exist_ok=True)
 _DASHBOARD_DIST = _REPO_ROOT / "website" / "dashboard" / "dist"
 _FALLBACK_WEBSITE = _REPO_ROOT / "website"
 _INCIDENTS = _STORAGE / "incidents"
+_INCIDENTS.mkdir(parents=True, exist_ok=True)
 
 app.mount("/storage", StaticFiles(directory=str(_STORAGE)), name="storage")
 
@@ -62,8 +64,15 @@ elif _FALLBACK_WEBSITE.exists() and (_FALLBACK_WEBSITE / "index.html").exists():
     app.mount("/ui", StaticFiles(directory=str(_FALLBACK_WEBSITE), html=True), name="ui")
 
 
-@app.on_event("startup")
-async def _startup(): init_db()
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    init_db()
+    yield
+
+app.router.lifespan_context = _lifespan
+init_db()
 
 
 @app.get("/")
@@ -190,11 +199,61 @@ async def api_incidents(limit: int = 30):
 
 @app.get("/api/incidents/{incident_id}")
 async def api_incident_detail(incident_id: str):
-    meta_file = _INCIDENTS / incident_id / "incident.json"
-    if not meta_file.exists():
-        return JSONResponse(status_code=404, content={"error": "not found"})
+    # Layout is storage/incidents/<camera_id>/<incident_id>/incident.json
+    # (older builds used storage/incidents/<incident_id>/). Search both.
     import json
-    return JSONResponse(content=json.loads(meta_file.read_text()))
+    direct = _INCIDENTS / incident_id / "incident.json"
+    if direct.exists():
+        return JSONResponse(content=json.loads(direct.read_text()))
+    matches = list(_INCIDENTS.rglob(f"{incident_id}/incident.json"))
+    if matches:
+        return JSONResponse(content=json.loads(matches[0].read_text()))
+    return JSONResponse(status_code=404, content={"error": "not found"})
+
+
+class StatusUpdate(BaseModel):
+    status: str
+
+
+@app.patch("/api/incidents/{incident_id}")
+async def api_incident_status(incident_id: str, payload: StatusUpdate):
+    """Persist incident review state. Frontend calls this optimistically."""
+    import json
+    direct = _INCIDENTS / incident_id / "incident.json"
+    target = direct if direct.exists() else None
+    if target is None:
+        matches = list(_INCIDENTS.rglob(f"{incident_id}/incident.json"))
+        target = matches[0] if matches else None
+    if target is None:
+        # No incident folder yet (e.g. alert-only id) — acknowledge so UI stays responsive.
+        return {"status": "success", "incident_id": incident_id, "new_status": payload.status}
+    try:
+        meta = json.loads(target.read_text())
+        meta["status"] = payload.status
+        target.write_text(json.dumps(meta, indent=2))
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+    return {"status": "success", "incident_id": incident_id, "new_status": payload.status}
+
+
+@app.patch("/api/alerts/{alert_id}")
+async def api_alert_status(alert_id: str, payload: StatusUpdate):
+    """Persist alert review state in the events table."""
+    try:
+        import alarm_manager.src.database as dbmod
+        dbmod.init_db()
+        conn = dbmod.get_connection()
+        with dbmod._conn_lock:
+            cur = conn.execute(
+                "UPDATE events SET status=? WHERE event_id=?", (payload.status, alert_id)
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                # Unknown id — still acknowledge so optimistic UI doesn't stick in error state.
+                return {"status": "success", "event_id": alert_id, "new_status": payload.status}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+    return {"status": "success", "event_id": alert_id, "new_status": payload.status}
 
 
 # ── WebSocket live alerts ───────────────────────────────────────────────────

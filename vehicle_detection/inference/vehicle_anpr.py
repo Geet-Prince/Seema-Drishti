@@ -20,10 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 def get_best_device():
+    """Back-compat wrapper — resolves via configs/compute.py when available."""
+    try:
+        from configs.compute import detect_compute
+        return detect_compute()["device"]
+    except Exception:
+        pass
     if torch.cuda.is_available():
         return "cuda:0"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
     return "cpu"
 
 
@@ -33,6 +37,11 @@ class VehicleANPR:
             raise RuntimeError("Ultralytics YOLO not installed")
             
         self.device = get_best_device()
+        try:
+            from configs.compute import apply_torch_thread_limits
+            apply_torch_thread_limits()
+        except Exception:
+            pass
         self.vehicle_model = YOLO(vehicle_model)
         self.vehicle_model.to(self.device)
         
